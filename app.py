@@ -34,7 +34,7 @@ AUTHORIZED_USERS = {
         "expire": "2028-02-28",
         "roles": ["機構社工"]
     },
-    "SUPERVISOR-XR": {
+    "AMMAWU-VIP": {
         "name": "欣蓉居家督導",
         "expire": "2027-12-31",
         "roles": ["居家督導"]
