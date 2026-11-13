@@ -10,7 +10,7 @@ from openai import OpenAI
 # 1. 頁面設定與通用標題
 # ──────────────────────────────────────────────
 st.set_page_config(
-    page_title="長照 AI 智慧行政工作台",
+    page_title=" AI 智慧行政工作台",
     page_icon="📋",
     layout="wide"
 )
@@ -151,7 +151,7 @@ with st.sidebar.expander("⚖️ C | 服務條款與責任界定"):
 # ──────────────────────────────────────────────
 # 7. 主畫面顯示
 # ──────────────────────────────────────────────
-st.title("📋 長照 AI 智慧行政工作台")
+st.title("📋  AI 智慧行政工作台")
 st.caption(f"⚡ 當前運行模式：**【{selected_role}專區】** ｜ 登入身份：{user_info['name']}")
 
 # 讀取 API Key（優先讀 Secrets）
@@ -184,15 +184,15 @@ if selected_role == "機構社工":
         st.subheader("📚 系統操作與匯入指南")
         st.markdown(
             """
-            本工作台支援各類長照資訊系統（不限單一廠商）之 Excel 匯出檔，無需繁瑣調整格式即可快速處理：
+            本工作台支援各類資訊系統（不限單一廠商）之 Excel 匯出檔，無需繁瑣調整格式即可快速處理：
 
             #### 🔹 步驟一：從機構既有系統匯出資料
-            1. 登入您機構平時使用的管理系統（如各類長照/護理資訊平台）。
+            1. 登入您機構平時使用的管理系統（如各類/護理資訊平台）。
             2. 找到「住民清冊」或「當季評估/護理紀錄」匯出功能，下載為 **Excel (.xlsx)** 或 **CSV** 檔。
             
             #### 🔹 步驟二：個人資料去識別化（個資保護重要原則）
             * 匯出後，請確認僅保留 **「個案編號 / 床號」** 作為唯一辨識碼。
-            * 請務必**移除真實姓名、身分證字號**，符合長照個資防護法規規範。
+            * 請務必**移除真實姓名、身分證字號**，符合個資防護法規規範。
 
             #### 🔹 步驟三：直接上傳分析
             * 系統具備**智慧欄位辨識**功能，您不需要手動將資料剪貼至特定範本。
@@ -293,9 +293,9 @@ if selected_role == "機構社工":
                         cell.border = thin_border
                         
             st.download_button(
-                label="📥 點此下載【長照機構評估_初次建立標準範本.xlsx】",
+                label="📥 點此下載【機構評估_初次建立標準範本.xlsx】",
                 data=tpl_out.getvalue(),
-                file_name="長照機構評估_初次建立標準範本.xlsx",
+                file_name="機構評估_初次建立標準範本.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
@@ -330,7 +330,7 @@ if selected_role == "機構社工":
                 with col2:
                     model_name = st.selectbox("AI 模型選擇", ["gpt-4o-mini", "gpt-4o"])
 
-                default_system_prompt = """你是一名資深長照住宿式機構社工。你的任務是為住民撰寫季度生活評估紀錄。
+                default_system_prompt = """你是一名資深住宿式機構社工。你的任務是為住民撰寫季度生活評估紀錄。
 
             【核心原則】：
             1. 嚴禁在內文中提及個案編號、床號或特定年份季度（嚴禁出現如「3F-305-4」、「2026年第一季」等字眼）。
@@ -479,7 +479,7 @@ if selected_role == "機構社工":
                     st.download_button(
                         label="📥 【點此下載】排版完成之完整 Excel 報告檔 (.xlsx)",
                         data=output.getvalue(),
-                        file_name=f"長照評估報告_{st.session_state.current_quarter}.xlsx",
+                        file_name=f"評估報告_{st.session_state.current_quarter}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         type="primary"  # 醒目紅色/主題色按鈕
                     )
