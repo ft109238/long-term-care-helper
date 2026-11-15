@@ -323,10 +323,13 @@ if selected_role == "機構社工":
 
                     sys_prompt = (
                         "你是一位資深的台灣長照機構社工師。請根據提供的住民過往評估紀錄/病況與本季觀察，"
-                        "撰寫一段專業、客觀、流暢且符合長照評鑑規範的『季度社會心理與適應評估報告』（約120～180字）。"
-                        "要求：1. 語氣溫暖專業，使用台灣長照社工慣用語彙。2. 若無特殊重大事件，請自然延續並微調句型，切勿生硬照抄。3. 絕不捏造未提供的醫療診斷。"
+                        "直接撰寫一段專業、客觀、流暢且符合長照評鑑規範的季度社會心理與適應評估內文（約120～180字）。"
+                        "嚴格要求：\n"
+                        "1. 【直接輸出正文】：絕對不要在開頭加上『季度社會心理與適應評估報告』等任何標題或前言。\n"
+                        "2. 【不寫個案編號】：內文中一律以「住民」或「個案」稱呼，絕對不要寫出個案代號或數字編號（例如不可寫「個案134」）。\n"
+                        "3. 【專業語氣】：使用台灣長照社工慣用語彙；若無特殊重大事件，請自然延續並微調句型，切勿生硬照抄，也絕不捏造未提供的醫療診斷。"
                     )
-                    user_prompt = f"個案代號：{cid}\n過往紀錄/基本病況：{base_info}\n本季觀察與事件：{event_info if event_info.strip() else '本季作息與情緒平穩，無特殊重大事件。'}"
+                    user_prompt = f"過往紀錄/基本病況：{base_info}\n本季觀察與事件：{event_info if event_info.strip() else '本季作息與情緒平穩，無特殊重大事件。'}"
 
                     try:
                         resp = client.chat.completions.create(
@@ -337,10 +340,13 @@ if selected_role == "機構社工":
                             ],
                             temperature=0.7
                         )
-                        results.append(resp.choices[0].message.content.strip())
+                        raw_text = resp.choices[0].message.content.strip()
+                        # 雙重保險：自動濾除開頭可能殘留的標題行與個案編號
+                        raw_text = re.sub(r"^.*?評估報告[：:\s]*\n+", "", raw_text)
+                        raw_text = raw_text.replace(f"個案{cid}", "個案").replace(f"住民{cid}", "住民")
+                        results.append(raw_text.strip())
                     except Exception as e:
                         results.append(f"[生成失敗: {str(e)}]")
-
                     progress_bar.progress((i + 1) / len(target_df))
 
                 target_df["生成之季度評估報告"] = results
