@@ -345,20 +345,71 @@ if selected_role == "機構社工":
 
                 target_df["生成之季度評估報告"] = results
                 status_text.success("🎉 全部生成完成！")
+                st.session_state["social_worker_df"] = target_df
+                st.session_state["social_worker_quarter"] = quarter_label
+
+            # 顯示與精緻 Excel 匯出區（存入 session_state，錄影按下載畫面也不會消失）
+            if "social_worker_df" in st.session_state and st.session_state["social_worker_df"] is not None:
+                final_sw_df = st.session_state["social_worker_df"]
+                saved_q = st.session_state.get("social_worker_quarter", quarter_label)
 
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                    target_df.to_excel(writer, index=False, sheet_name="季度評估結果")
+                    final_sw_df.to_excel(writer, index=False, sheet_name="季度評估結果")
+                    ws = writer.sheets["季度評估結果"]
+                    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+                    from openpyxl.utils import get_column_letter
+
+                    header_font = Font(name="微軟正黑體", size=11, bold=True, color="FFFFFF")
+                    header_fill = PatternFill(start_color="2B547E", end_color="2B547E", fill_type="solid")
+                    body_font = Font(name="微軟正黑體", size=10)
+                    thin_border = Border(
+                        left=Side(style="thin", color="CCCCCC"),
+                        right=Side(style="thin", color="CCCCCC"),
+                        top=Side(style="thin", color="CCCCCC"),
+                        bottom=Side(style="thin", color="CCCCCC"),
+                    )
+
+                    # 標題列樣式
+                    for cell in ws[1]:
+                        cell.font = header_font
+                        cell.fill = header_fill
+                        cell.alignment = Alignment(horizontal="center", vertical="center")
+                        cell.border = thin_border
+                    ws.row_dimensions[1].height = 28
+
+                    # 依據欄位名稱自動設定合適欄寬
+                    for col_idx, col_name in enumerate(final_sw_df.columns, start=1):
+                        col_letter = get_column_letter(col_idx)
+                        name_str = str(col_name)
+                        if any(k in name_str for k in ["編號", "床號", "代碼", "ID"]):
+                            ws.column_dimensions[col_letter].width = 14
+                        elif any(k in name_str for k in ["生成", "範本", "評估報告"]):
+                            ws.column_dimensions[col_letter].width = 55
+                        else:
+                            ws.column_dimensions[col_letter].width = 32
+
+                    # 資料列：自動換行 ＋ 動態計算列高
+                    for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=len(final_sw_df) + 1), start=2):
+                        max_lines = 1
+                        for cell in row:
+                            cell.font = body_font
+                            cell.border = thin_border
+                            cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+                            val_str = str(cell.value or "")
+                            est_lines = val_str.count("\n") + (len(val_str) // 26) + 1
+                            if est_lines > max_lines:
+                                max_lines = est_lines
+                        ws.row_dimensions[row_idx].height = max(36, max_lines * 16)
 
                 st.download_button(
                     label="📥 【點此下載】排版完成之完整 Excel 報告檔 (.xlsx)",
                     data=output.getvalue(),
-                    file_name=f"社工評估報告_{quarter_label}.xlsx",
+                    file_name=f"社工評估報告_{saved_q}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     type="primary"
                 )
-                st.dataframe(target_df, use_container_width=True)
-
+                st.dataframe(final_sw_df, use_container_width=True)
 
 # ==============================================================================
 # 居家服務督導員（B單位居督）專屬工作台
