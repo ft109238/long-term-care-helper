@@ -422,8 +422,8 @@ if selected_role == "機構社工":
 # ==============================================================================
 elif selected_role == "居家督導":
     tab_plan, tab_visit, tab_guide = st.tabs([
-        "📋 個別化服務計畫與評值（支援 .html 直接上傳）",
-        "📞 客製化家訪／電訪督導紀錄",
+        "📋 個別化服務計畫與訪視生成台（支援 .html）",
+        "📞 單筆快速訪視防重複產生器",
         "📖 居督模組操作指南"
     ])
 
@@ -439,17 +439,26 @@ elif selected_role == "居家督導":
         text = re.sub(r"<[^>]+>", "", html_str)
         text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
         lines = [line.strip() for line in text.splitlines() if line.strip()]
-        return "\n".join(lines)
+        clean_text = "\n".join(lines)
+
+        # 用 Python 預先幫 AI 把「每月X次」精準換算成「每週約Y次」，杜絕 AI 心算秀逗！
+        def convert_monthly_to_weekly(match):
+            num = int(match.group(1))
+            weekly = max(1, round(num / 4))
+            return f"每月{num}次（系統已精準換算為：每週{weekly}次）"
+
+        clean_text = re.sub(r"每月\s*(\d+)\s*次", convert_monthly_to_weekly, clean_text)
+        return clean_text
 
     # --------------------------------------------------------------------------
-    # 子分頁 1：個別化服務計畫與訪視紀錄
+    # 子分頁 1：個別化服務計畫、評值、多份家訪/電訪生成台
     # --------------------------------------------------------------------------
     with tab_plan:
         st.info("🔒 個資安全提醒：系統僅在記憶體即時解析照管計畫內容，不會儲存任何個案資料。產出後請確認無真實姓名再貼回系統。")
 
         input_source = st.radio(
             "選擇資料匯入方式：",
-            ["📂 直接拖曳上傳衛福部照管平台 .html 檔（支援單檔或多檔批次）", "✍️ 手動貼上計畫文字 / BA 碼條件"],
+            ["📂 直接拖曳上傳衛福部照管平台 .html 檔（支援單檔或多檔批次）", "✍️ 手動貼上計畫文字 / BA・G 碼條件"],
             horizontal=True
         )
 
@@ -467,236 +476,298 @@ elif selected_role == "居家督導":
                     clean_txt = parse_care_html(f)
                     parsed_cases.append({"source_name": f.name, "content": clean_txt})
                 st.success(f"✅ 已成功解析 {len(parsed_cases)} 份照管計畫 HTML 檔案！")
-                with st.expander("👀 檢視系統自動萃取的計畫純文字內容（確認無誤）"):
+                with st.expander("👀 檢視系統自動萃取的計畫純文字內容（已預先換算週計次數）"):
                     for item in parsed_cases:
                         st.markdown(f"**📄 檔案：{item['source_name']}**")
                         st.text(item["content"][:1500] + ("\n...(以下省略)" if len(item["content"]) > 1500 else ""))
         else:
             manual_txt = st.text_area(
-                "請貼上照顧計畫內容或輸入服務條件（例如：BA01、BA11一週五次；BA13一週兩次用來外出復健，一次4-5組）：",
+                "請貼上照顧計畫內容或輸入服務條件（例如：BA02一週1次修剪指甲、BA07一週6次、GA09喘息一週1次）：",
                 height=140,
-                placeholder="貼上照管系統的照顧問題、核定 BA 碼別與頻率..."
+                placeholder="貼上照管系統的照顧問題、核定 BA 碼與 G 碼別與頻率..."
             )
             if manual_txt.strip():
-                parsed_cases.append({"source_name": "手動輸入個案", "content": manual_txt.strip()})
+                def conv_m(m):
+                    n = int(m.group(1))
+                    return f"每月{n}次（系統已精準換算為：每週{max(1, round(n / 4))}次）"
+                parsed_cases.append({
+                    "source_name": "手動輸入個案",
+                    "content": re.sub(r"每月\s*(\d+)\s*次", conv_m, manual_txt.strip())
+                })
 
         st.markdown("---")
-        st.markdown("##### 🎯 勾選本次需要生成的文書項目（可複選）：")
-        chk_col1, chk_col2, chk_col3, chk_col4 = st.columns(4)
-        with chk_col1:
-            gen_plan = st.checkbox("📋 個別化服務計畫\n（問題・目標・計畫）", value=True)
-        with chk_col2:
-            gen_eval = st.checkbox("🔄 定期評值追蹤\n（不限次數/異動調整）", value=False)
-        with chk_col3:
-            gen_home = st.checkbox("🏠 家訪督導紀錄\n（實地訪視評估）", value=False)
-        with chk_col4:
-            gen_phone = st.checkbox("📞 電訪督導紀錄\n（電話追蹤關懷）", value=False)
+        st.markdown("##### 🎯 選擇要生成的文書項目與份數（可單獨生成或同時生成）：")
+
+        # 第一排：服務計畫 & 定期評值
+        col_top1, col_top2 = st.columns(2)
+        with col_top1:
+            gen_plan = st.checkbox("📋 個別化服務計畫（僅讀取 BA 碼、G 碼／強制週計／統整格式）", value=True)
+        with col_top2:
+            gen_eval = st.checkbox("🔄 定期評值追蹤（不限次數／強制週計不秀逗）", value=False)
 
         eval_note = ""
-        visit_note = ""
         if gen_eval:
             eval_note = st.text_input(
                 "📝 定期評值條件補充（選填，不限第幾次）：",
-                placeholder="例如：本次評值無變化（維持原計畫）／ 或：原 BA13 一週 2 次改為一週 1 次"
+                placeholder="例如：本次評值無變化（維持原計畫）／ 或：原 BA13 每週 2 次改為每週 1 次"
             )
+
+        # 第二排：家訪（三個月一次，下拉 1~4 份） & 電訪（每月一次，下拉 1~12 份）
+        col_v1, col_v2 = st.columns(2)
+        with col_v1:
+            with st.container(border=True):
+                gen_home = st.checkbox("🏠 家訪督導紀錄（三個月一次）", value=False)
+                home_count = st.selectbox(
+                    "選擇同時生成「家訪紀錄」份數（1～4 份）：",
+                    options=[1, 2, 3, 4],
+                    index=0,
+                    disabled=not gen_home,
+                    key="home_count_select"
+                )
+        with col_v2:
+            with st.container(border=True):
+                gen_phone = st.checkbox("📞 電訪督導紀錄（每月一次）", value=False)
+                phone_count = st.selectbox(
+                    "選擇同時生成「電訪紀錄」份數（1～12 份）：",
+                    options=list(range(1, 13)),
+                    index=0,
+                    disabled=not gen_phone,
+                    key="phone_count_select"
+                )
+
+        visit_note = ""
         if gen_home or gen_phone:
             visit_note = st.text_input(
-                "📝 本次訪視實際狀況補充（選填）：",
-                placeholder="例如：案主身體穩定、定期回診、有至據點上課、居服員服務態度良好無異狀"
+                "📝 訪視實際狀況補充（選填，套用於本次家訪/電訪）：",
+                placeholder="例如：案主身體穩定、定期回診、居服員服務態度良好無異狀"
             )
 
-    if st.button("✨ 開始生成個別化居督文書", type="primary", use_container_width=True, key="btn_gen_plan"):
-                if not parsed_cases:
-                    st.warning("⚠️ 請先上傳 .html 檔案或輸入計畫內容！")
-                elif not any([gen_plan, gen_eval, gen_home, gen_phone]):
-                    st.warning("⚠️ 請至少勾選一項要生成的文書項目！")
-                else:
-                    selected_tasks = []
-                    if gen_plan:
-                        selected_tasks.append(
-                            "【個別化服務計畫】：\n"
-                            "  ※ 重要過濾規則：請只抓取『居家照顧服務項目（BA碼別，例如 BA07、BA15-1、BA20 等）』，**自動忽略「喘息服務（GA碼/年度額度）」及交通接送**。\n"
-                            "  ※ 點數絕對一致規則：假設篩選出 N 項 BA 服務，則『問題說明』、『目標』、『計畫』三個區塊**各自都必須嚴格列出 1.～N. 點**（1項服務=1點，三者點數必須完全相同）。\n"
-                            "  ※ 頻率換算規則：在『計畫』區塊中，**一律統一以「每週」計算服務次數**（若原始資料寫每月次數，請自動除以 4 換算為每週幾次，例如每月8次→每週提供2次；每月27次→每週提供6至7次），**嚴禁出現「每月」或「每年」字眼**。\n"
-                            "  輸出格式範例：\n"
-                            "  問題說明\n"
-                            "  1. 案主因[原因]，在[具體服務細項]能力受限，需他人協助，以維持[目的]。\n"
-                            "  目標\n"
-                            "  1. 協助案主完成[具體服務細項]，維持/提升[具體目標]。\n"
-                            "  計畫\n"
-                            "  1. 每週提供X次[服務名稱/碼別]，協助案主[具體服務細節]，以維持[目的]。"
-                        )
-                    if gen_eval:
-                        selected_tasks.append(
-                            f"【定期評值追蹤】：根據補充條件（{eval_note if eval_note.strip() else '目前服務執行順利，無特殊異動'}），撰寫一段約 80～110 字的精簡追蹤評值紀錄。若有調整頻率/碼別，須交代考量原因、調整前後對比與後續追蹤；若無變化，簡潔說明各項服務符合案主需求、維持原計畫即可。**全篇禁止出現「居督」二字主語**。"
-                        )
-                    if gen_home:
-                        selected_tasks.append(
-                            f"【家訪督導紀錄】：僅根據資料中『實際核定的 BA 服務項目』與近況（{visit_note if visit_note.strip() else '整體生活與身體狀況穩定'}），撰寫一段約 100～130 字的精簡實地訪視紀錄，涵蓋案主身心及居家環境、服務執行落實度、家屬回饋與後續追蹤。**全程使用客觀記錄口吻，禁止出現「居督」作為主語**（直接寫「本次家訪觀察案主...」）。"
-                        )
-                    if gen_phone:
-                        selected_tasks.append(
-                            f"【電訪督導紀錄】：僅根據資料中『實際核定的 BA 服務項目』與近況（{visit_note if visit_note.strip() else '身體狀況尚穩定、服務執行正常'}），撰寫一段約 80～110 字的精簡電訪紀錄。**全程省略「居督」主語**（直接寫「致電案屬關心近況...」或「電訪了解案主近期生活情形...」）。"
-                        )
+        # 分開獨立的生成按鈕區（可只按某一種，也可一鍵全部生成）
+        btn_col1, btn_col2, btn_col3 = st.columns(3)
+        with btn_col1:
+            click_plan_only = st.button("📋 僅生成服務計畫／評值", use_container_width=True, key="btn_only_plan")
+        with btn_col2:
+            click_visit_only = st.button("🏠📞 僅生成家訪／電訪紀錄", use_container_width=True, key="btn_only_visit")
+        with btn_col3:
+            click_all = st.button("✨ 依勾選項目一鍵全部生成", type="primary", use_container_width=True, key="btn_gen_all")
 
-                    new_outputs = []
+        # 判斷使用者按了哪一顆按鈕
+        run_plan = False
+        run_eval = False
+        run_home = False
+        run_phone = False
+        triggered = False
 
-                    with st.status("⏳ AI 正在解析計畫並撰寫專屬文書，請稍候（約 5～15 秒）...", expanded=True) as status_box:
-                        prog = st.progress(0)
-                        for idx, case in enumerate(parsed_cases):
-                            st.write(f"🔄 正在處理第 {idx + 1} / {len(parsed_cases)} 份：**{case['source_name']}** ...")
+        if click_plan_only:
+            triggered = True
+            run_plan = True
+            run_eval = gen_eval
+        elif click_visit_only:
+            triggered = True
+            run_home = gen_home
+            run_phone = gen_phone
+            if not (run_home or run_phone):
+                st.warning("⚠️ 請先勾選「家訪督導紀錄」或「電訪督導紀錄」並選擇份數！")
+                triggered = False
+        elif click_all:
+            triggered = True
+            run_plan = gen_plan
+            run_eval = gen_eval
+            run_home = gen_home
+            run_phone = gen_phone
+            if not any([run_plan, run_eval, run_home, run_phone]):
+                st.warning("⚠️ 請至少勾選一項要生成的文書項目！")
+                triggered = False
 
-                            style_hints = [
-                                "訪視紀錄開頭請從案主近期生活與身體狀況切入，用詞精煉。",
-                                "訪視紀錄開頭請從服務執行情形與案家回饋切入，條理分明。",
-                                "訪視紀錄開頭請以定期追蹤關懷視角切入，避免制式客套話。",
-                                "語句簡潔俐落、貼近台灣長照系統實務登打風格，不寫冗長廢話。"
-                            ]
-                            variety_rule = style_hints[idx % len(style_hints)]
-
-                            sys_prompt = (
-                                "你是一位資深的台灣長照 B 單位行政專家，精通衛福部照顧服務管理資訊平台登打規格。\n"
-                                "核心要求：\n"
-                                "1. 【只看 BA 居家服務、一律以每週計算】：只針對 BA 碼居家服務撰寫，自動排除喘息服務（GA碼）。計畫頻率一律換算為「每週提供X次」，絕不寫每月或每年。\n"
-                                "2. 【1對1點數完全一致】：有幾項 BA 服務，問題說明、目標、計畫就各自列幾點，不可多也不可少。\n"
-                                "3. 【嚴格去主語】：所有紀錄一律省略「居督」二字主語。\n"
-                                "4. 【防重複與精簡】：" + variety_rule + " 每點控制在 25～45 字內，精準不冗長。\n"
-                                "5. 【隱私保護】：一律以「案主」或「案屬」稱呼，絕不輸出真實姓名、身分證字號或地址。"
-                            )
-
-                            user_prompt = (
-                                f"以下是從照管平台萃取的完整個案計畫資料（請閱讀至後半段的『核定服務項目與BA碼別明細』）：\n"
-                                f"--------------------\n{case['content'][:18000]}\n--------------------\n\n"
-                                f"請嚴格遵守『只抓 BA 服務、計畫一律以每週計算、三區塊點數 1 對 1 一致』，生成以下勾選的項目：\n" + "\n".join(selected_tasks)
-                            )
-
-                            try:
-                                resp = client.chat.completions.create(
-                                    model="gpt-4o-mini",
-                                    messages=[
-                                        {"role": "system", "content": sys_prompt},
-                                        {"role": "user", "content": user_prompt}
-                                    ],
-                                    temperature=0.4
-                                )
-                                res_text = resp.choices[0].message.content.strip()
-                            except Exception as e:
-                                res_text = f"❌ 生成發生錯誤：{str(e)}"
-
-                            new_outputs.append({"file": case["source_name"], "result": res_text})
-                            prog.progress((idx + 1) / len(parsed_cases))
-
-                        status_box.update(label=f"✅ 全部完成！共成功生成 {len(new_outputs)} 位個案的專屬文書", state="complete", expanded=False)
-
-                    # 將結果存入 session_state，按下載按鈕時畫面絕不會消失！
-                    st.session_state["supervisor_outputs"] = new_outputs
-
-            # ──────────────────────────────────────────────────────────────────────
-            # 顯示區（讀取 session_state，下載後依然穩固保留在畫面上，不重跑 API）
-            # ──────────────────────────────────────────────────────────────────────
-    if "supervisor_outputs" in st.session_state and st.session_state["supervisor_outputs"]:
-        saved_outputs = st.session_state["supervisor_outputs"]
-        st.success(f"🎉 目前已保留 {len(saved_outputs)} 位個案的生成結果（下載檔案不會清除畫面）：")
-
-        export_rows = []
-        for item in saved_outputs:
-            with st.container(border=True):
-                st.subheader(f"📄 個案來源：{item['file']}")
-                st.markdown(item["result"])
-                with st.expander("📋 點此展開純文字框（方便直接全選複製）"):
-                    st.code(item["result"], language=None)
-
-            # 清理 Markdown 星號(**)與多餘井字號(###)，讓匯出到 Excel 的文字乾淨美觀
-            clean_excel_text = re.sub(r"\*\*", "", item["result"])
-            clean_excel_text = re.sub(r"#{1,4}\s*", "", clean_excel_text).strip()
-            export_rows.append({
-                "來源檔案": item["file"],
-                "生成之居督個別化文書內容": clean_excel_text
-            })
-
-        # 產生精緻排版之 Excel（自動換行、適當欄寬、自動調整列高）
-        df_exp = pd.DataFrame(export_rows)
-        out_buf = io.BytesIO()
-        with pd.ExcelWriter(out_buf, engine="openpyxl") as writer:
-            df_exp.to_excel(writer, index=False, sheet_name="居督個別化文書")
-            ws = writer.sheets["居督個別化文書"]
-            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-
-            header_font = Font(name="微軟正黑體", size=11, bold=True, color="FFFFFF")
-            header_fill = PatternFill(start_color="2B547E", end_color="2B547E", fill_type="solid")
-            body_font = Font(name="微軟正黑體", size=10)
-            thin_border = Border(
-                left=Side(style="thin", color="CCCCCC"),
-                right=Side(style="thin", color="CCCCCC"),
-                top=Side(style="thin", color="CCCCCC"),
-                bottom=Side(style="thin", color="CCCCCC"),
-            )
-
-            ws.column_dimensions["A"].width = 28
-            ws.column_dimensions["B"].width = 85
-
-            for cell in ws[1]:
-                cell.font = header_font
-                cell.fill = header_fill
-                cell.alignment = Alignment(horizontal="center", vertical="center")
-                cell.border = thin_border
-            ws.row_dimensions[1].height = 28
-
-            for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=len(df_exp) + 1), start=2):
-                text_val = str(row[1].value or "")
-                line_count = text_val.count("\n") + (len(text_val) // 42) + 3
-                ws.row_dimensions[row_idx].height = max(60, line_count * 16)
-                for col_i, cell in enumerate(row):
-                    cell.font = body_font
-                    cell.border = thin_border
-                    cell.alignment = Alignment(
-                        horizontal="left",
-                        vertical="top",
-                        wrap_text=True
+        if triggered:
+            if not parsed_cases:
+                st.warning("⚠️ 請先上傳 .html 檔案或輸入計畫內容！")
+            else:
+                selected_tasks = []
+                if run_plan:
+                    selected_tasks.append(
+                        "【個別化服務計畫】：\n"
+                        "  1. 【碼別過濾鐵律】：只讀取照專計畫中核定的 **BA 碼（居家服務）** 與 **G 碼（如 GA09 喘息服務等）**，並將所有核定的 BA 碼與 G 碼項目**完整陳列、一項不漏**；嚴格排除 OT 碼（營養餐飲）、交通接送等其他碼別。\n"
+                        "  2. 【統整版面鐵律（嚴禁分開循環打）】：全篇只能出現一次「問題說明」、一次「目標」、一次「計畫」這三個大標題！假設有 N 項核定服務（BA碼+G碼），格式必須嚴格如下：\n"
+                        "     問題說明\n"
+                        "     1. 案主因[具體原因]，在[第1項服務細項]能力受限，需他人協助，以維持[目的]。\n"
+                        "     2. 案主因[具體原因]，在[第2項服務細項]能力受限，需他人協助，以維持[目的]。\n"
+                        "     （依序條列至第 N 點）\n\n"
+                        "     目標\n"
+                        "     1. 協助案主完成[第1項服務細項]，維持/提升[具體目標]。\n"
+                        "     2. 協助案主完成[第2項服務細項]，維持/提升[具體目標]。\n"
+                        "     （依序條列至第 N 點）\n\n"
+                        "     計畫\n"
+                        "     1. 每週提供X次[第1項服務名稱，不需硬寫代碼或可簡寫服務名稱]，協助案主[具體服務內容]，以維持[目的]。\n"
+                        "     2. 每週提供X次[第2項服務名稱]，協助案主[具體服務內容]，以維持[目的]。\n"
+                        "     （依序條列至第 N 點）\n"
+                        "  3. 【強制週計鐵律】：『計畫』區塊中的所有服務次數，**一律只能以「每週提供X次」呈現**（請直接採用資料中系統已換算好的『每週X次』數字，若無則將每月次數除以 4 四捨五入），**嚴禁出現「每月」或「每年」字眼**！"
+                    )
+                if run_eval:
+                    selected_tasks.append(
+                        f"【定期評值追蹤】：根據補充條件（{eval_note if eval_note.strip() else '目前服務執行順利，無特殊異動'}），撰寫一段約 80～110 字的精簡追蹤評值紀錄。若提及服務頻率，**一律只能寫「每週X次」（直接採用系統已換算之週計數字，嚴禁把每月次數誤寫成每週，也禁止出現每月/每年）**。全篇禁止出現「居督」二字主語。"
+                    )
+                if run_home:
+                    selected_tasks.append(
+                        f"【家訪督導紀錄（三個月一次，共需生成 {home_count} 份獨立紀錄）】：請依序標示『第1次家訪紀錄』至『第{home_count}次家訪紀錄』，每份約 100～130 字。僅針對資料中實際核定的 BA 碼與 G 碼服務項目及近況（{visit_note if visit_note.strip() else '整體生活與身體狀況穩定'}）撰寫，涵蓋案主身心與居家環境、服務執行落實度、家屬回饋與後續追蹤。**{home_count} 份的開頭、切入角度與句型必須明顯不同，絕不重複，且全程禁止出現「居督」主語**。"
+                    )
+                if run_phone:
+                    selected_tasks.append(
+                        f"【電訪督導紀錄（每月一次，共需生成 {phone_count} 份獨立紀錄）】：請依序標示『第1次電訪紀錄』至『第{phone_count}次電訪紀錄』，每份約 80～110 字。精準扣合該個案實際核定的 BA 碼與 G 碼服務項目及近況（{visit_note if visit_note.strip() else '身體狀況尚穩定、服務執行正常'}）。**{phone_count} 份的開頭、關懷重點與句型結構必須逐月變化、絕不複製貼上，且全程禁止出現「居督」主語**。"
                     )
 
-        st.download_button(
-            label="📥 打包下載排版完成之正式 Excel 報告 (.xlsx)",
-            data=out_buf.getvalue(),
-            file_name="居督個別化計畫與訪視紀錄.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary"
-        )
+                new_outputs = []
+
+                with st.status("⏳ AI 正在解析計畫並撰寫專屬文書，請稍候（份數較多時約需 10～25 秒）...", expanded=True) as status_box:
+                    prog = st.progress(0)
+                    for idx, case in enumerate(parsed_cases):
+                        st.write(f"🔄 正在處理第 {idx + 1} / {len(parsed_cases)} 份：**{case['source_name']}** ...")
+
+                        sys_prompt = (
+                            "你是一位資深的台灣長照 B 單位行政專家，精通衛福部照顧服務管理資訊平台登打規格。\n"
+                            "核心鐵律：\n"
+                            "1. 【只看 BA 碼與 G 碼】：只陳列照專核定的 BA 碼（居家服務）與 G 碼（喘息服務等），一項不漏；自動剔除 OT 碼等其他項目。\n"
+                            "2. 【統整版面不拆開】：問題說明、目標、計畫各自集中條列 `1.~N.`，絕不可把每項服務拆成獨立段落循環輸出。\n"
+                            "3. 【強制週計、嚴禁算錯】：所有服務頻率一律以「每週X次」表示（請嚴格使用括號內系統已換算好的每週次數），絕不可把每月次數直接當成每週次數，也禁止出現「每月」或「每年」。\n"
+                            "4. 【嚴格去主語】：所有紀錄一律省略「居督」二字主語。\n"
+                            "5. 【多份防重複】：若要求一次產出多份家訪或電訪，每份都必須使用不同的句型開頭與觀察重點。\n"
+                            "6. 【隱私保護】：一律以「案主」或「案屬」稱呼，絕不輸出真實姓名、身分證字號或地址。"
+                        )
+
+                        user_prompt = (
+                            f"以下是從照管平台萃取的完整個案計畫資料（已自動預先換算週計次數）：\n"
+                            f"--------------------\n{case['content'][:18000]}\n--------------------\n\n"
+                            f"請嚴格遵守所有格式與週計鐵律，生成以下指定項目：\n" + "\n".join(selected_tasks)
+                        )
+
+                        try:
+                            resp = client.chat.completions.create(
+                                model="gpt-4o-mini",
+                                messages=[
+                                    {"role": "system", "content": sys_prompt},
+                                    {"role": "user", "content": user_prompt}
+                                ],
+                                temperature=0.45
+                            )
+                            res_text = resp.choices[0].message.content.strip()
+                        except Exception as e:
+                            res_text = f"❌ 生成發生錯誤：{str(e)}"
+
+                        new_outputs.append({"file": case["source_name"], "result": res_text})
+                        prog.progress((idx + 1) / len(parsed_cases))
+
+                    status_box.update(label=f"✅ 全部完成！共成功生成 {len(new_outputs)} 位個案的專屬文書", state="complete", expanded=False)
+
+                st.session_state["supervisor_outputs"] = new_outputs
+
+        # ──────────────────────────────────────────────────────────────────────
+        # 顯示與精緻 Excel 匯出區（存入 session_state，下載後畫面不消失）
+        # ──────────────────────────────────────────────────────────────────────
+        if "supervisor_outputs" in st.session_state and st.session_state["supervisor_outputs"]:
+            saved_outputs = st.session_state["supervisor_outputs"]
+            st.success(f"🎉 目前已保留 {len(saved_outputs)} 位個案的生成結果（下載檔案不會清除畫面）：")
+
+            export_rows = []
+            for item in saved_outputs:
+                with st.container(border=True):
+                    st.subheader(f"📄 個案來源：{item['file']}")
+                    st.markdown(item["result"])
+                    with st.expander("📋 點此展開純文字框（方便直接全選複製）"):
+                        st.code(item["result"], language=None)
+
+                clean_excel_text = re.sub(r"\*\*", "", item["result"])
+                clean_excel_text = re.sub(r"#{1,4}\s*", "", clean_excel_text).strip()
+                export_rows.append({
+                    "來源檔案": item["file"],
+                    "生成之居督個別化文書內容": clean_excel_text
+                })
+
+            df_exp = pd.DataFrame(export_rows)
+            out_buf = io.BytesIO()
+            with pd.ExcelWriter(out_buf, engine="openpyxl") as writer:
+                df_exp.to_excel(writer, index=False, sheet_name="居督個別化文書")
+                ws = writer.sheets["居督個別化文書"]
+                from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+                header_font = Font(name="微軟正黑體", size=11, bold=True, color="FFFFFF")
+                header_fill = PatternFill(start_color="2B547E", end_color="2B547E", fill_type="solid")
+                body_font = Font(name="微軟正黑體", size=10)
+                thin_border = Border(
+                    left=Side(style="thin", color="CCCCCC"),
+                    right=Side(style="thin", color="CCCCCC"),
+                    top=Side(style="thin", color="CCCCCC"),
+                    bottom=Side(style="thin", color="CCCCCC"),
+                )
+
+                ws.column_dimensions["A"].width = 28
+                ws.column_dimensions["B"].width = 85
+
+                for cell in ws[1]:
+                    cell.font = header_font
+                    cell.fill = header_fill
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                    cell.border = thin_border
+                ws.row_dimensions[1].height = 28
+
+                for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=len(df_exp) + 1), start=2):
+                    text_val = str(row[1].value or "")
+                    line_count = text_val.count("\n") + (len(text_val) // 42) + 3
+                    ws.row_dimensions[row_idx].height = max(60, line_count * 16)
+                    for cell in row:
+                        cell.font = body_font
+                        cell.border = thin_border
+                        cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+
+            st.download_button(
+                label="📥 打包下載排版完成之正式 Excel 報告 (.xlsx)",
+                data=out_buf.getvalue(),
+                file_name="居督個別化計畫與訪視紀錄.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary"
+            )
 
     # --------------------------------------------------------------------------
-    # 子分頁 2：純訪視紀錄快速批次生成
+    # 子分頁 2：單筆快速訪視防重複產生器
     # --------------------------------------------------------------------------
     with tab_visit:
-        st.subheader("📞 快速單筆／多筆訪視紀錄防重複產生器")
-        st.caption("若臨時只需補打單筆電訪或家訪，可直接在此勾選該個案實際使用的服務項目，系統自動避開重複句型。")
+        st.subheader("📞 單筆／多份訪視紀錄防重複產生器（免上傳 HTML）")
+        st.caption("臨時需補打單一個案的多份電訪（每月一次）或家訪（三個月一次）時，可直接勾選服務項目並選擇份數。")
 
-        v_type = st.radio("訪視方式", ["📞 電話訪視（電訪）", "🏠 實地訪視（家訪）"], horizontal=True)
+        v_col1, v_col2 = st.columns(2)
+        with v_col1:
+            v_type = st.radio("選擇訪視類型：", ["🏠 家訪督導紀錄（三個月一次）", "📞 電訪督導紀錄（每月一次）"], horizontal=False)
+        with v_col2:
+            if "家訪" in v_type:
+                v_count = st.selectbox("選擇同時生成家訪份數（1～4 份）：", options=[1, 2, 3, 4], index=0, key="quick_home_cnt")
+            else:
+                v_count = st.selectbox("選擇同時生成電訪份數（1～12 份）：", options=list(range(1, 13)), index=0, key="quick_phone_cnt")
+
         ba_options = st.multiselect(
-            "勾選此個案實際核定的服務內容（可多選）：",
+            "勾選此個案實際核定的 BA 碼與 G 碼服務內容（可多選）：",
             [
                 "BA01 基本身體清潔", "BA02 基本日常照顧", "BA04 協助進食或管灌",
                 "BA05 餐食照顧", "BA07 協助沐浴及洗頭", "BA10 翻身拍背",
                 "BA11 肢體關節活動", "BA12 協助上(下)樓梯", "BA13 陪同外出（如復健/採買）",
                 "BA14 陪同就醫", "BA15 家務協助", "BA16 代購或代領或代送服務",
-                "BA17 協助執行輔助性醫療", "BA20 陪伴服務", "BA23 協助洗頭", "BA24 協助排泄"
+                "BA17 協助執行輔助性醫療", "BA20 陪伴服務", "BA23 協助洗頭", "BA24 協助排泄",
+                "GA09 居家喘息服務"
             ],
             default=["BA01 基本身體清潔", "BA15 家務協助"]
         )
         v_status = st.text_area(
             "輸入本次訪視了解到的近況與回饋：",
-            value="案主身體狀況尚穩定，有規律回診，目前平日會至社區據點上課；家屬表示居服員服務態度良好、準時且細心，符合期待。",
+            value="案主身體狀況尚穩定，有規律回診；家屬表示居服員服務態度良好、準時且細心，符合期待。",
             height=100
         )
-        v_count = st.slider("一次產生幾種不同表述版本供挑選？（防重複引擎）", min_value=1, max_value=5, value=2)
 
         if st.button("🚀 生成個別化訪視紀錄", type="primary", key="btn_quick_visit"):
             sys_p = (
-                "你是台灣長照 B 單位資深督導。請根據勾選的實際 BA 服務項目與訪視近況，"
-                f"撰寫 {v_count} 個不同句型結構的【{v_type}】紀錄（每則約 80～110 字，精簡不冗長）。"
-                "嚴格要求：1. 全程禁止出現「居督」二字主語（直接寫「致電案家...」、「本次家訪觀察...」）。2. 只能提及勾選的服務項目。3. 每個版本的開頭與句型必須明顯不同。"
+                "你是台灣長照 B 單位資深督導。請根據勾選的實際 BA/G 碼服務項目與訪視近況，"
+                f"依序撰寫 {v_count} 份不同句型結構的【{v_type}】（每則約 80～110 字，精簡不冗長）。"
+                "嚴格要求：1. 全程禁止出現「居督」二字主語（直接寫「致電案家...」、「本次家訪觀察...」）。2. 只能提及勾選的服務項目。3. 每一份的開頭與句型必須明顯不同，絕不重複。"
             )
             user_p = f"核定服務項目：{', '.join(ba_options)}\n本次訪視近況：{v_status}"
-            with st.spinner("正在撰寫高個別化訪視紀錄..."):
+            with st.spinner(f"正在撰寫 {v_count} 份高個別化訪視紀錄..."):
                 resp = client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[{"role": "system", "content": sys_p}, {"role": "user", "content": user_p}],
@@ -716,9 +787,9 @@ elif selected_role == "居家督導":
             2. 在網頁空白處按右鍵選擇 **「另存新檔」**（或按快捷鍵 `Ctrl + S`），存檔類型選擇 **「網頁，僅 HTML」** 或 **「網頁，完整」**。
             3. 若透過通訊軟體（如 LINE）傳檔，檔案可能會被自動打包成 `.zip` 壓縮檔，上傳前請先在電腦上**解壓縮**，再將裡面的 `.html` 檔拖曳進本系統即可。
 
-            #### 🔹 2. 多項目勾選與防重複機制
-            * 系統會自動讀取 `.html` 內的照顧問題與 BA 服務碼別，**完全排除個案未核定的項目**。
-            * 支援一次拖曳多份 `.html` 檔批次處理，系統會自動輪換句型開頭與描述視角，確保每位個案的計畫、評值與訪視紀錄皆具高度個別化。
+            #### 🔹 2. 本次升級核心規則說明
+            * **碼別與週計自動換算**：系統僅擷取照專核定的 **BA 碼與 G 碼**，並自動在底層將每月次數除以 4 換算成「每週幾次」，徹底避免「每週 23 次」這類計算誤差。
+            * **統整格式與多份訪視生成**：服務計畫統一採「問題說明 $\rightarrow$ 目標 $\rightarrow$ 計畫」三區塊集中條列；家訪（三個月一次，1～4 份）與電訪（每月一次，1～12 份）可獨立按需生成，且每份句型自動輪換不重複。
             """
         )
 
