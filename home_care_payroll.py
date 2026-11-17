@@ -74,12 +74,17 @@ def auto_match_col(columns, keywords):
                 return col
     return columns[0] if len(columns) > 0 else None
 
-def build_formatted_workbook(final_payroll, a_split_df, b_df, col_client, col_worker, col_code, col_count, month_label, a_share_pct, b_share_pct):
-    """產生含【全機構總表】＋【每位居服員專屬個人薪資單分頁】的精美格式 Excel"""
+def build_formatted_workbook(final_payroll, a_split_df, b_df, col_client, col_worker, col_code, col_count, month_label, a_share_pct, b_share_pct, target_workers=None):
+    """產生精美格式 Excel：target_workers=None 時匯出全機構總表+全員分頁；指定單人時匯出該員獨立薪資單"""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        final_payroll.to_excel(writer, sheet_name="0_全機構薪資總表", index=False)
         wb = writer.book
+        # 若為全機構匯出，第一頁放總表；若為單人匯出，直接只放該員個人薪資明細表
+        if target_workers is None:
+            final_payroll.to_excel(writer, sheet_name="0_全機構薪資總表", index=False)
+            workers = [w for w in final_payroll[col_worker].dropna().unique() if not str(w).startswith("⚠️")]
+        else:
+            workers = target_workers
 
         font_title = Font(name="微軟正黑體", size=14, bold=True)
         font_sec = Font(name="微軟正黑體", size=11, bold=True, color="1F4E78")
@@ -100,11 +105,14 @@ def build_formatted_workbook(final_payroll, a_split_df, b_df, col_client, col_wo
         align_left = Alignment(horizontal="left", vertical="center")
         align_right = Alignment(horizontal="right", vertical="center")
 
-        workers = [w for w in final_payroll[col_worker].dropna().unique() if not str(w).startswith("⚠️")]
-
         for worker in workers:
             safe_sheet_name = str(worker)[:30].replace("/", "_").replace("\\", "_").replace("*", "").replace("?", "").replace("[", "").replace("]", "")
             ws = wb.create_sheet(title=safe_sheet_name)
+
+            # 設定 A4 列印版面（橫向/縱向自動縮放至 1 頁寬，方便行政直接列印）
+            ws.page_setup.fitToWidth = 1
+            ws.page_setup.fitToHeight = 0
+            ws.sheet_properties.pageSetUpPr.fitToPage = True
 
             ws.merge_cells("A1:G1")
             ws["A1"] = f"{month_label} {worker} 薪資服務明細"
@@ -279,11 +287,15 @@ def build_formatted_workbook(final_payroll, a_split_df, b_df, col_client, col_wo
             for col_i, width in col_widths.items():
                 ws.column_dimensions[get_column_letter(col_i)].width = width
 
+        # 若為單人匯出，刪除 openpyxl 預設留下的空白預設工作表（如果有的話）
+        if "Sheet" in wb.sheetnames and len(wb.sheetnames) > 1:
+            del wb["Sheet"]
+
     return output.getvalue()
 
 def render_home_care_payroll():
     st.title("💰 居家服務薪資拆帳與核銷對帳引擎")
-    st.caption("自動拆解多人串接姓名（如「呂文卉、柯盈如」），一鍵產出【全機構薪資總表】＋【每位居服員一人一頁個人薪資單】。")
+    st.caption("自動拆解多人串接姓名，支援【單人獨立薪資單下載列印】與【全機構一人一分頁整批匯出】。")
 
     with st.expander("⚙️ 機構拆帳內規與報表抬頭設定", expanded=True):
         col1, col2, col3 = st.columns(3)
@@ -387,7 +399,6 @@ def render_home_care_payroll():
         else:
             work_df["is_indigenous"] = False
 
-        # 自動拆解同一格內用「、」或「,」串接的多位居服員姓名
         work_df["_worker_list"] = work_df[col_worker].apply(
             lambda x: [w.strip() for w in re.split(r"[、,，/]+", str(x)) if w.strip()]
         )
@@ -446,7 +457,6 @@ def render_home_care_payroll():
             a_base[col_client] = a_base[col_client].astype(str).str.strip()
             a_base[col_code] = a_base[col_code].astype(str).str.strip().str.upper()
             a_base["核銷總額"] = pd.to_numeric(a_base["核銷總額"], errors='coerce').fillna(0)
-            # 同個案同A碼項目先合併加總（避免逐日 AA08/AA09 重複列多行）
             a_base = a_base.groupby([col_client, col_code], as_index=False)["核銷總額"].sum()
         else:
             a_raw = work_df[work_df[col_code].str.startswith(("AA", "GA"))].copy()
@@ -484,22 +494,25 @@ def render_home_care_payroll():
         final_payroll = pd.merge(b_summary, a_summary, on=col_worker, how="outer").fillna(0)
         final_payroll["本月應發總薪資(A+B)"] = final_payroll["B碼實領薪資"] + final_payroll["A碼實領薪資"]
 
-        excel_bytes = build_formatted_workbook(
+        all_excel_bytes = build_formatted_workbook(
             final_payroll, a_split_df, b_df,
             col_client, col_worker, col_code, col_count,
-            month_label, a_share_pct, b_share_pct
+            month_label, a_share_pct, b_share_pct,
+            target_workers=None
         )
 
         st.session_state["payroll_result"] = {
             "final_payroll": final_payroll,
             "a_split_df": a_split_df,
             "b_df": b_df,
-            "excel_bytes": excel_bytes,
+            "all_excel_bytes": all_excel_bytes,
             "col_client": col_client,
             "col_worker": col_worker,
             "col_code": col_code,
             "col_count": col_count,
-            "month_label": month_label
+            "month_label": month_label,
+            "a_share_pct": a_share_pct,
+            "b_share_pct": b_share_pct
         }
 
     if "payroll_result" in st.session_state:
@@ -514,36 +527,70 @@ def render_home_care_payroll():
         m_label = res["month_label"]
 
         valid_workers = [w for w in final_payroll[c_worker].tolist() if not str(w).startswith("⚠️")]
-        st.success(f"✅ 計算完成！已自動拆解多人串接名單，共為 {len(valid_workers)} 位居服員生成獨立薪資服務明細單：")
+        st.success(f"✅ 計算完成！共為 {len(valid_workers)} 位居服員完成拆帳核算：")
         
+        # 全機構總計
+        st.markdown("#### 🏢 全機構薪資總計")
         m1, m2, m3 = st.columns(3)
-        m1.metric("總計應發居服員薪資", f"${final_payroll['本月應發總薪資(A+B)'].sum():,.0f}")
-        m2.metric("A碼居服員實領總額", f"${final_payroll['A碼實領薪資'].sum():,.0f}")
-        m3.metric("B碼居服員實領總額", f"${final_payroll['B碼實領薪資'].sum():,.0f}")
+        m1.metric("全機構應發總薪資 (A+B)", f"${final_payroll['本月應發總薪資(A+B)'].sum():,.0f}")
+        m2.metric("全機構 A碼實領總額", f"${final_payroll['A碼實領薪資'].sum():,.0f}")
+        m3.metric("全機構 B碼實領總額", f"${final_payroll['B碼實領薪資'].sum():,.0f}")
 
+        st.divider()
+
+        # 單人預覽與單人獨立列印下載
         preview_list = valid_workers + [w for w in final_payroll[c_worker].tolist() if str(w).startswith("⚠️")]
-        preview_worker = st.selectbox("🔍 網頁即時預覽單一居服員明細（切換名字畫面不會消失）：", preview_list)
+        preview_worker = st.selectbox("🔍 選擇居服員檢視個人明細與下載單人薪資單：", preview_list)
         
+        # 計算該位居服員的個人總額卡片
+        w_row = final_payroll[final_payroll[c_worker] == preview_worker].iloc[0]
+        w_a_total = w_row["A碼實領薪資"]
+        w_b_total = w_row["B碼實領薪資"]
+        w_grand_total = w_row["本月應發總薪資(A+B)"]
+
+        st.markdown(f"#### 👤 【{preview_worker}】個人薪資總計")
+        wm1, wm2, wm3 = st.columns(3)
+        wm1.metric(f"{preview_worker} 本月應發總薪資", f"${w_grand_total:,.0f}")
+        wm2.metric("A碼拆帳總計", f"${w_a_total:,.0f}")
+        wm3.metric("B碼平地拆帳總計", f"${w_b_total:,.0f}")
+
         p_col1, p_col2 = st.columns(2)
         with p_col1:
             st.markdown(f"**{preview_worker} — A碼分攤明細**")
-            st.dataframe(
-                a_split_df[a_split_df[c_worker] == preview_worker][[c_client, "該案總服務次數", "個人服務次數", c_code, "核銷總額", "居服員實領"]],
-                use_container_width=True
-            )
+            w_a_view = a_split_df[a_split_df[c_worker] == preview_worker][[c_client, "該案總服務次數", "個人服務次數", c_code, "核銷總額", "居服員實領"]].copy()
+            w_a_view = w_a_view.rename(columns={"核銷總額": "A碼核銷金額", "居服員實領": f"A碼實領({res['a_share_pct']}%)"})
+            st.dataframe(w_a_view, use_container_width=True, hide_index=True)
         with p_col2:
             st.markdown(f"**{preview_worker} — B碼平地計薪明細**")
             if not b_df.empty:
-                st.dataframe(
-                    b_df[b_df[c_worker] == preview_worker].groupby([c_client, c_code], as_index=False).agg({c_count: "sum", "核銷總額(平地基準)": "sum", "居服員實領": "sum"}),
-                    use_container_width=True
-                )
+                w_b_view = b_df[b_df[c_worker] == preview_worker].groupby([c_client, c_code], as_index=False).agg({c_count: "sum", "核銷總額(平地基準)": "sum", "居服員實領": "sum"})
+                w_b_view = w_b_view.rename(columns={c_count: "服務次數", "核銷總額(平地基準)": "平地計薪金額", "居服員實領": f"B碼實領({res['b_share_pct']}%)"})
+                st.dataframe(w_b_view, use_container_width=True, hide_index=True)
 
-        st.download_button(
-            label=f"📥 下載【{m_label} 全機構居服員個人薪資服務明細.xlsx】（一人一分頁）",
-            data=res["excel_bytes"],
-            file_name=f"{m_label}_全機構居服員薪資服務明細.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
-            use_container_width=True
+        # 產生該位居服員專屬的單人 Excel 檔
+        single_excel_bytes = build_formatted_workbook(
+            final_payroll, a_split_df, b_df,
+            c_client, c_worker, c_code, c_count,
+            m_label, res["a_share_pct"], res["b_share_pct"],
+            target_workers=[preview_worker]
         )
+
+        # 雙下載按鈕：左邊下載單人專屬檔（可轉PDF或直接列印），右邊下載全機構整批檔
+        dl_col1, dl_col2 = st.columns(2)
+        with dl_col1:
+            st.download_button(
+                label=f"🖨️ 下載【{m_label} {preview_worker} 薪資服務明細.xlsx】（單人獨立檔）",
+                data=single_excel_bytes,
+                file_name=f"{m_label}_{preview_worker}_薪資服務明細.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        with dl_col2:
+            st.download_button(
+                label=f"📥 下載【{m_label} 全機構居服員薪資服務明細.xlsx】（一人一分頁）",
+                data=res["all_excel_bytes"],
+                file_name=f"{m_label}_全機構居服員薪資服務明細.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                use_container_width=True
+            )
