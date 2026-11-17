@@ -37,15 +37,33 @@ DEFAULT_PRICE_TABLE = {
     "BA24": {"plain": 220,  "indigenous": 265},
 }
 
+def detect_header_row(df_raw):
+    """自動尋找包含真正欄位名稱的那一列（解決系統匯出表頭有合併大標題的問題）"""
+    keywords = ["個案", "案主", "姓名", "服務人員", "居服員", "照服員", "代碼", "項目", "碼別", "次數", "金額", "核銷", "身分證"]
+    for idx in range(min(15, len(df_raw))):
+        row_values = [str(val).strip() for val in df_raw.iloc[idx].values if pd.notna(val)]
+        # 只要這一列命中 2 個以上的關鍵字，就認定是真正的欄位標題列
+        match_count = sum(1 for kw in keywords if any(kw in val for val in row_values))
+        if match_count >= 2:
+            df_clean = df_raw.iloc[idx + 1:].copy()
+            df_clean.columns = [str(c).strip() if pd.notna(c) else f"欄位_{i}" for i, c in enumerate(df_raw.iloc[idx].values)]
+            return df_clean.reset_index(drop=True)
+    # 若前15列都沒偵測到，退回預設第0列當表頭
+    df_clean = df_raw.iloc[1:].copy()
+    df_clean.columns = [str(c).strip() if pd.notna(c) else f"欄位_{i}" for i, c in enumerate(df_raw.iloc[0].values)]
+    return df_clean.reset_index(drop=True)
+
 def read_uploaded_files(uploaded_files):
-    """支援單檔或多檔自動合併讀取 (Excel / CSV)"""
+    """支援單檔或多檔自動合併讀取，並自動定位真實標題列"""
     dfs = []
     for f in uploaded_files:
+        f.seek(0)
         if f.name.endswith('.csv'):
-            df = pd.read_csv(f)
+            df_raw = pd.read_csv(f, header=None)
         else:
-            df = pd.read_excel(f)
-        dfs.append(df)
+            df_raw = pd.read_excel(f, header=None)
+        df_clean = detect_header_row(df_raw)
+        dfs.append(df_clean)
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
 def auto_match_col(columns, keywords):
