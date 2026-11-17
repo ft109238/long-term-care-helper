@@ -1,4 +1,5 @@
 import streamlit as st
+import pdfplumber
 import pandas as pd
 import numpy as np
 import io
@@ -65,16 +66,34 @@ def detect_header_row(df_raw):
     return df_clean.reset_index(drop=True)
 
 def read_uploaded_files(uploaded_files):
-    """支援單檔或多檔自動合併讀取，並自動定位真實標題列"""
+    """支援單檔或多檔自動合併讀取（含 Excel、CSV 與 PDF 表格），並自動定位真實標題列"""
     dfs = []
     for f in uploaded_files:
         f.seek(0)
-        if f.name.endswith('.csv'):
+        fname = f.name.lower()
+        if fname.endswith('.csv'):
             df_raw = pd.read_csv(f, header=None)
+            dfs.append(detect_header_row(df_raw))
+        elif fname.endswith('.pdf'):
+            all_rows = []
+            with pdfplumber.open(f) as pdf:
+                for page in pdf.pages:
+                    tables = page.extract_tables()
+                    for tbl in tables:
+                        for row in tbl:
+                            # 清理 PDF 儲存格內的換行符號，避免欄位名稱或人名斷行
+                            cleaned_row = [str(cell).replace("\n", "").strip() if cell is not None else "" for cell in row]
+                            if any(cleaned_row):
+                                all_rows.append(cleaned_row)
+            if all_rows:
+                # 補齊各列長度一致後轉成 DataFrame，再交給 detect_header_row 自動抓表頭
+                max_len = max(len(r) for r in all_rows)
+                padded_rows = [r + [""] * (max_len - len(r)) for r in all_rows]
+                df_raw = pd.DataFrame(padded_rows)
+                dfs.append(detect_header_row(df_raw))
         else:
             df_raw = pd.read_excel(f, header=None)
-        df_clean = detect_header_row(df_raw)
-        dfs.append(df_clean)
+            dfs.append(detect_header_row(df_raw))
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
 def auto_match_col(columns, keywords):
@@ -543,19 +562,19 @@ def render_home_care_payroll():
     with u_col1:
         schedule_files = st.file_uploader(
             "1️⃣ 上傳【當月班表】(供一般A碼計算服務次數比例)",
-            type=["xlsx", "xls", "csv"],
+            type=["xlsx", "xls", "csv", "pdf"],
             accept_multiple_files=True
         )
     with u_col2:
         a_claim_files = st.file_uploader(
             "2️⃣ 上傳【A碼核銷表】(僅讀代碼/類別/個案/數量/日期/人員)",
-            type=["xlsx", "xls", "csv"],
+            type=["xlsx", "xls", "csv", "pdf"],
             accept_multiple_files=True
         )
     with u_col3:
         service_detail_files = st.file_uploader(
             "3️⃣ 上傳【服務紀錄明細表】(只讀取 BA碼 與 G碼)",
-            type=["xlsx", "xls", "csv"],
+            type=["xlsx", "xls", "csv", "pdf"],
             accept_multiple_files=True
         )
 
