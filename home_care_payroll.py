@@ -453,41 +453,57 @@ def render_home_care_payroll():
 
         if not df_a_claim.empty:
             a_base = df_a_claim[[ac_client, ac_code, ac_qty, ac_amount]].copy()
-            a_base.columns = [col_client, col_code, "_a_qty", "核銷總額"]
+            a_base.columns = [col_client, col_code, "_a_qty", "清冊核銷原額"]
             a_base = a_base[a_base[col_client].notna() & a_base[col_code].notna()].copy()
             a_base = a_base[~a_base[col_client].astype(str).str.contains("總計|合計|小計", na=False)].copy()
             a_base[col_client] = a_base[col_client].astype(str).str.strip()
             a_base[col_code] = a_base[col_code].astype(str).str.strip().str.upper()
             a_base["_a_qty"] = pd.to_numeric(a_base["_a_qty"], errors='coerce').fillna(1)
-            a_base["核銷總額"] = pd.to_numeric(a_base["核銷總額"], errors='coerce').fillna(0)
+            a_base["清冊核銷原額"] = pd.to_numeric(a_base["清冊核銷原額"], errors='coerce').fillna(0)
 
-            # 【關鍵修正】AA09 / GA09 強制無視清冊原金額，一律以公定單價(500) × 數量計算
+            # 判斷是否為定額實領碼 (AA09 / GA09)
+            is_fixed_code = a_base[col_code].str.startswith(("AA09", "GA09"))
+            
+            # 一般 A 碼：居服員分潤池 = 清冊核銷原額 × 50% (a_share_pct)
+            # AA09 / GA09：不走 55 分帳，居服員分潤池直接就是 500元 × 天數
+            a_base["核銷總額"] = a_base["清冊核銷原額"]
+            a_base["居服員總分潤池"] = a_base["清冊核銷原額"] * (a_share_pct / 100.0)
+            
             mask_aa09 = a_base[col_code].str.startswith("AA09")
             mask_ga09 = a_base[col_code].str.startswith("GA09")
-            a_base.loc[mask_aa09, "核銷總額"] = a_base.loc[mask_aa09, "_a_qty"] * custom_aa09
-            a_base.loc[mask_ga09, "核銷總額"] = a_base.loc[mask_ga09, "_a_qty"] * custom_ga09
+            a_base.loc[mask_aa09, "居服員總分潤池"] = a_base.loc[mask_aa09, "_a_qty"] * custom_aa09
+            a_base.loc[mask_ga09, "居服員總分潤池"] = a_base.loc[mask_ga09, "_a_qty"] * custom_ga09
 
-            a_base = a_base.groupby([col_client, col_code], as_index=False)["核銷總額"].sum()
+            a_base = a_base.groupby([col_client, col_code], as_index=False)[["核銷總額", "居服員總分潤池"]].sum()
         else:
             a_raw = work_df[work_df[col_code].str.startswith(("AA", "GA"))].copy()
-            def calc_a_gross(row):
+            def calc_a_pool(row):
                 code = row[col_code]
-                price_info = price_map.get(code, {"plain": 0, "indigenous": 0})
-                unit_price = price_info["indigenous"] if (a_use_indigenous and row["is_indigenous"]) else price_info["plain"]
-                return unit_price * row[col_count]
-            a_raw["核銷總額"] = a_raw.apply(calc_a_gross, axis=1)
-            a_base = a_raw.groupby([col_client, col_code], as_index=False)["核銷總額"].sum()
+                if code.startswith("AA09"):
+                    gross = 770 * row[col_count]
+                    pool = custom_aa09 * row[col_count]
+                elif code.startswith("GA09"):
+                    gross = 770 * row[col_count]
+                    pool = custom_ga09 * row[col_count]
+                else:
+                    price_info = price_map.get(code, {"plain": 0, "indigenous": 0})
+                    unit_price = price_info["indigenous"] if (a_use_indigenous and row["is_indigenous"]) else price_info["plain"]
+                    gross = unit_price * row[col_count]
+                    pool = gross * (a_share_pct / 100.0)
+                return pd.Series([gross, pool])
+            a_raw[["核銷總額", "居服員總分潤池"]] = a_raw.apply(calc_a_pool, axis=1)
+            a_base = a_raw.groupby([col_client, col_code], as_index=False)[["核銷總額", "居服員總分潤池"]].sum()
 
         a_split_df = pd.merge(a_base, ratio_df, on=col_client, how="left")
         a_split_df[col_worker] = a_split_df[col_worker].fillna("⚠️ 無班表紀錄(需手動指定)")
         a_split_df["分配比例"] = a_split_df["分配比例"].fillna(1.0)
-        a_split_df["居服員分潤池"] = a_split_df["核銷總額"] * (a_share_pct / 100.0)
         
         if split_method == "依人頭均分":
             headcount = a_split_df.groupby([col_client, col_code])[col_worker].transform("count")
             a_split_df["分配比例"] = 1.0 / headcount
 
-        a_split_df["居服員實領"] = a_split_df["居服員分潤池"] * a_split_df["分配比例"]
+        # 直接用「居服員總分潤池 × 多人分配比例」算出實領，AA09/GA09 不會再被打折！
+        a_split_df["居服員實領"] = a_split_df["居服員總分潤池"] * a_split_df["分配比例"]
         if round_to_int:
             a_split_df["居服員實領"] = a_split_df["居服員實領"].round(0)
         a_split_df["公司留存"] = (a_split_df["核銷總額"] * a_split_df["分配比例"]) - a_split_df["居服員實領"]
