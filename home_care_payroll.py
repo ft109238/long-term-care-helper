@@ -376,12 +376,14 @@ def render_home_care_payroll():
     if not df_a_claim.empty:
         st.markdown("**A碼核銷表欄位對應：**")
         ac_cols = list(df_a_claim.columns)
-        ac1, ac2, ac3 = st.columns(3)
+        ac1, ac2, ac3, ac4 = st.columns(4)
         with ac1:
             ac_client = st.selectbox("核銷表-個案姓名/ID", ac_cols, index=ac_cols.index(auto_match_col(ac_cols, ["個案姓名", "個案", "案主", "姓名"])))
         with ac2:
             ac_code = st.selectbox("核銷表-A碼項目", ac_cols, index=ac_cols.index(auto_match_col(ac_cols, ["服務代碼", "代碼", "項目", "碼別"])))
         with ac3:
+            ac_qty = st.selectbox("核銷表-數量/天數", ac_cols, index=ac_cols.index(auto_match_col(ac_cols, ["數量", "次數", "天數"])))
+        with ac4:
             ac_amount = st.selectbox("核銷表-核銷總金額", ac_cols, index=ac_cols.index(auto_match_col(ac_cols, ["小計", "核銷金額", "申報金額", "總金額", "金額", "費用"])))
 
     if st.button("🚀 開始自動拆帳並產生個人薪資單", type="primary", use_container_width=True):
@@ -450,13 +452,21 @@ def render_home_care_payroll():
         ratio_df["分配比例"] = ratio_df["個人服務次數"] / ratio_df["該案總服務次數"]
 
         if not df_a_claim.empty:
-            a_base = df_a_claim[[ac_client, ac_code, ac_amount]].copy()
-            a_base.columns = [col_client, col_code, "核銷總額"]
+            a_base = df_a_claim[[ac_client, ac_code, ac_qty, ac_amount]].copy()
+            a_base.columns = [col_client, col_code, "_a_qty", "核銷總額"]
             a_base = a_base[a_base[col_client].notna() & a_base[col_code].notna()].copy()
             a_base = a_base[~a_base[col_client].astype(str).str.contains("總計|合計|小計", na=False)].copy()
             a_base[col_client] = a_base[col_client].astype(str).str.strip()
             a_base[col_code] = a_base[col_code].astype(str).str.strip().str.upper()
+            a_base["_a_qty"] = pd.to_numeric(a_base["_a_qty"], errors='coerce').fillna(1)
             a_base["核銷總額"] = pd.to_numeric(a_base["核銷總額"], errors='coerce').fillna(0)
+
+            # 【關鍵修正】AA09 / GA09 強制無視清冊原金額，一律以公定單價(500) × 數量計算
+            mask_aa09 = a_base[col_code].str.startswith("AA09")
+            mask_ga09 = a_base[col_code].str.startswith("GA09")
+            a_base.loc[mask_aa09, "核銷總額"] = a_base.loc[mask_aa09, "_a_qty"] * custom_aa09
+            a_base.loc[mask_ga09, "核銷總額"] = a_base.loc[mask_ga09, "_a_qty"] * custom_ga09
+
             a_base = a_base.groupby([col_client, col_code], as_index=False)["核銷總額"].sum()
         else:
             a_raw = work_df[work_df[col_code].str.startswith(("AA", "GA"))].copy()
