@@ -7,7 +7,7 @@ import re
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# 公定平地給付單價表（B碼一律採平地單價；A碼依平地標準查價，若為原民區核銷可於設定勾選或依實際單價）
+# 公定平地給付單價表（主代碼與 -1/-2 自用備餐子代碼皆採平地全額單價）
 DEFAULT_PRICE_TABLE = {
     "AA01": {"plain": 1700, "indigenous": 2040},
     "AA02": {"plain": 2000, "indigenous": 2400},
@@ -101,12 +101,10 @@ def read_uploaded_files(uploaded_files):
                     tables = page.extract_tables()
                     for tbl in tables:
                         for row in tbl:
-                            # 清理 PDF 儲存格內的換行符號，避免欄位名稱或人名斷行
                             cleaned_row = [str(cell).replace("\n", "").strip() if cell is not None else "" for cell in row]
                             if any(cleaned_row):
                                 all_rows.append(cleaned_row)
             if all_rows:
-                # 補齊各列長度一致後轉成 DataFrame，再交給 detect_header_row 自動抓表頭
                 max_len = max(len(r) for r in all_rows)
                 padded_rows = [r + [""] * (max_len - len(r)) for r in all_rows]
                 df_raw = pd.DataFrame(padded_rows)
@@ -131,7 +129,7 @@ def extract_code_prefix(val):
     return m.group(1) if m else s
 
 def build_formatted_workbook(final_payroll, a_split_df, bg_df, org_name, month_label, target_workers=None):
-    """100% 還原圖一版面：上方 A碼服務明細 (A~I) ＋ 左下薪資明細表 (A~D) ＋ 右下個案服務拆帳統計細項 (E~I)"""
+    """100% 還原機構專屬版面：上方 A碼服務明細 (A~I) ＋ 左下薪資明細表 (A~D) ＋ 右下個案服務拆帳統計細項 (E~I)"""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         wb = writer.book
@@ -175,7 +173,7 @@ def build_formatted_workbook(final_payroll, a_split_df, bg_df, org_name, month_l
             ws.sheet_properties.pageSetUpPr.fitToPage = True
 
             # =========================================================
-            # 上半部：A碼服務明細 (Columns A ~ I，對應圖一 G:I 合併為服務日期)
+            # 上半部：A碼服務明細 (Columns A ~ I)
             # =========================================================
             ws.merge_cells("A1:I1")
             ws["A1"] = org_name
@@ -208,7 +206,6 @@ def build_formatted_workbook(final_payroll, a_split_df, bg_df, org_name, month_l
 
             w_a_df = a_split_df[a_split_df["服務人員"] == worker].copy() if not a_split_df.empty else pd.DataFrame()
             
-            # 拆分成三類：1) 一般A碼 (AA01~08)  2) 假日碼 (AA09/GA09)  3) AA11 (身障/失智)
             if not w_a_df.empty:
                 df_a_hol = w_a_df[w_a_df["服務代碼"].str.startswith(("AA09", "GA09"))].copy()
                 df_a_11 = w_a_df[w_a_df["服務代碼"].str.startswith("AA11")].copy()
@@ -218,7 +215,7 @@ def build_formatted_workbook(final_payroll, a_split_df, bg_df, org_name, month_l
                 df_a_11 = pd.DataFrame()
                 df_a_reg = pd.DataFrame()
 
-            # 1) 一般 A 碼 (含 AA11 若有則一併列或分列，此處先列 AA01~08 與 AA11)
+            # 1) 一般 A 碼與 AA11
             df_top_block = pd.concat([df_a_reg, df_a_11], ignore_index=True)
             reg_start_row = r_idx + 1
             if not df_top_block.empty:
@@ -260,7 +257,6 @@ def build_formatted_workbook(final_payroll, a_split_df, bg_df, org_name, month_l
                     ws.cell(row=r_idx, column=ci).border = b_grid
 
             reg_end_row = r_idx
-            # 一般 A 碼粉紅小計列（使用 SUMIFS 區分 AA05/06/07 等一般A碼 與 AA11）
             r_idx += 1
             reg_tot_row = r_idx
             for ci in range(1, 7):
@@ -320,7 +316,6 @@ def build_formatted_workbook(final_payroll, a_split_df, bg_df, org_name, month_l
                     ws.cell(row=r_idx, column=ci).border = b_grid
 
             hol_end_row = r_idx
-            # 假日碼粉紅小計列（對應圖一 F12 粉紅小計 ＋ G12:H12 粉紅底）
             r_idx += 1
             hol_tot_row = r_idx
             for ci in range(1, 10):
@@ -358,7 +353,7 @@ def build_formatted_workbook(final_payroll, a_split_df, bg_df, org_name, month_l
             ws.cell(row=name_row, column=2).alignment = al_c
 
             # =========================================================
-            # 下半部右側：個案服務拆帳統計細項 (Columns E ~ I，完全還原圖一 5 欄)
+            # 下半部右側：個案服務拆帳統計細項 (Columns E ~ I)
             # =========================================================
             right_start_row = name_row
             ws.merge_cells(start_row=right_start_row, start_column=5, end_row=right_start_row, end_column=9)
@@ -384,10 +379,8 @@ def build_formatted_workbook(final_payroll, a_split_df, bg_df, org_name, month_l
                 c.alignment = al_c
                 c.border = b_right_grid
 
-            # 準備右下角「服務紀錄明細表 (BA碼+G碼)」彙總資料
             w_bg_df = bg_df[bg_df["服務人員"] == worker].copy() if not bg_df.empty else pd.DataFrame()
             if not w_bg_df.empty:
-                # 依個案彙整（若同個案有多種代碼，可列出代碼清單與總次數、總實領金額，確保20列內清晰好讀）
                 client_bg_summary = (
                     w_bg_df.groupby("個案姓名", as_index=False, sort=False)
                     .agg({
@@ -458,13 +451,13 @@ def build_formatted_workbook(final_payroll, a_split_df, bg_df, org_name, month_l
             # 左下角「應領金額」與「應扣金額」明細表
             earn_start = left_hdr_row + 1
             earn_items = [
-                ("工作薪資", f"=I{r_sub_row}"),          # 自動連動右側 薪資小計(A)
+                ("工作薪資", f"=I{r_sub_row}"),
                 ("偏鄉交通補助", 0),
                 ("偏鄉獎勵津貼", 0),
                 ("交通費", 0),
                 ("轉場津貼", 0),
-                ("AA05.06.07", f"=F{reg_tot_row}"),     # 自動連動上方一般A碼粉紅小計
-                ("A碼假日(AA09)", f"=F{hol_tot_row}"),  # 自動連動上方假日碼粉紅小計
+                ("AA05.06.07", f"=F{reg_tot_row}"),
+                ("A碼假日(AA09)", f"=F{hol_tot_row}"),
                 ("AA11 (身障/失智)", f'=SUMIFS(F{reg_start_row}:F{reg_end_row}, A{reg_start_row}:A{reg_end_row}, "AA11*")'),
                 ("喘息", 0),
                 ("其它", 0),
@@ -540,7 +533,6 @@ def build_formatted_workbook(final_payroll, a_split_df, bg_df, org_name, month_l
                 ws.cell(row=net_row, column=ci).border = Border(left=thin, right=thin, top=thin, bottom=med)
             ws.row_dimensions[net_row].height = 24
 
-            # 欄寬設定（完美還原圖一 9 欄比例）
             col_widths = {1: 11, 2: 24, 3: 13, 4: 11, 5: 7, 6: 13, 7: 14, 8: 11, 9: 15}
             for col_i, width in col_widths.items():
                 ws.column_dimensions[get_column_letter(col_i)].width = width
@@ -552,7 +544,7 @@ def build_formatted_workbook(final_payroll, a_split_df, bg_df, org_name, month_l
 
 def render_home_care_payroll():
     st.title("💰 居家服務薪資拆帳與核銷對帳引擎")
-    st.caption("支援【1.當月班表 ＋ 2.A碼核銷表 ＋ 3.服務紀錄明細表(BA/G碼)】三檔精準運算，100% 還原機構專屬雙欄薪資明細表。")
+    st.caption("支援【1.A碼核銷表 ＋ 2.服務紀錄明細表(BA/G碼)】雙檔精準運算，100% 還原機構專屬雙欄薪資明細表。")
 
     with st.expander("⚙️ 機構抬頭、薪資年月與拆帳內規設定", expanded=True):
         col1, col2, col3 = st.columns(3)
@@ -576,56 +568,35 @@ def render_home_care_payroll():
     st.divider()
 
     # ==========================================
-    # 三檔上傳區
+    # 雙檔上傳區（已移除多餘的橫向班表欄位）
     # ==========================================
-    u_col1, u_col2, u_col3 = st.columns(3)
+    u_col1, u_col2 = st.columns(2)
     with u_col1:
-        schedule_files = st.file_uploader(
-            "1️⃣ 上傳【當月班表】(供一般A碼計算服務次數比例)",
+        a_claim_files = st.file_uploader(
+            "1️⃣ 上傳【A碼核銷表】(僅讀代碼/類別/個案/數量/日期/人員)",
             type=["xlsx", "xls", "csv", "pdf"],
             accept_multiple_files=True
         )
     with u_col2:
-        a_claim_files = st.file_uploader(
-            "2️⃣ 上傳【A碼核銷表】(僅讀代碼/類別/個案/數量/日期/人員)",
-            type=["xlsx", "xls", "csv", "pdf"],
-            accept_multiple_files=True
-        )
-    with u_col3:
         service_detail_files = st.file_uploader(
-            "3️⃣ 上傳【服務紀錄明細表】(只讀取 BA碼 與 G碼)",
+            "2️⃣ 上傳【服務紀錄明細表】(算BA/G碼平地薪資 ＋ 自動統計A碼次數比例)",
             type=["xlsx", "xls", "csv", "pdf"],
             accept_multiple_files=True
         )
 
-    if not schedule_files or not a_claim_files or not service_detail_files:
-        st.info("👆 請依序上傳上方【1.當月班表】、【2.A碼核銷表】與【3.服務紀錄明細表】三個檔案以開始精準運算。")
+    if not a_claim_files or not service_detail_files:
+        st.info("👆 請上傳上方【1.A碼核銷表】與【2.服務紀錄明細表】兩個檔案（支援 Excel、CSV、PDF）即可開始運算。")
         return
 
-    df_sched = read_uploaded_files(schedule_files)
     df_a_raw = read_uploaded_files(a_claim_files)
     df_svc_raw = read_uploaded_files(service_detail_files)
 
     # ==========================================
-    # 欄位對應確認
+    # 雙表欄位對齊確認
     # ==========================================
-    st.subheader("🔗 三表欄位對齊確認")
-    
-    with st.expander("展開/收合三表欄位對應細節", expanded=True):
-        st.markdown("**1️⃣ 【當月班表】欄位（計算個案服務次數比重）：**")
-        sc_cols = list(df_sched.columns)
-        s1, s2, s3 = st.columns(3)
-        with s1:
-            sc_client = st.selectbox("班表-個案姓名", sc_cols, index=sc_cols.index(auto_match_col(sc_cols, ["個案姓名", "個案", "案主", "姓名"])))
-        with s2:
-            sc_worker = st.selectbox("班表-服務人員", sc_cols, index=sc_cols.index(auto_match_col(sc_cols, ["服務人員", "居服員", "照服員", "員工", "人員"])))
-        with s3:
-            sc_cnt_opts = ["(每列算 1 次)"] + sc_cols
-            def_sc_cnt = auto_match_col(sc_cols, ["次數", "數量", "總次", "天數"])
-            def_sc_cnt_idx = sc_cnt_opts.index(def_sc_cnt) if def_sc_cnt in sc_cols and any(k in str(def_sc_cnt) for k in ["次數", "數量", "天數"]) else 0
-            sc_count = st.selectbox("班表-服務次數欄位", sc_cnt_opts, index=def_sc_cnt_idx)
-
-        st.markdown("**2️⃣ 【A碼核銷表】欄位（強制僅讀取圖二 6 欄位）：**")
+    st.subheader("🔗 雙表欄位對齊確認")
+    with st.expander("展開/收合欄位對應細節", expanded=True):
+        st.markdown("**1️⃣ 【A碼核銷表】欄位（強制僅讀取指定 6 欄位）：**")
         ac_cols = list(df_a_raw.columns)
         a1, a2, a3, a4, a5, a6 = st.columns(6)
         with a1:
@@ -641,18 +612,18 @@ def render_home_care_payroll():
         with a6:
             ac_worker = st.selectbox("A碼-服務人員", ac_cols, index=ac_cols.index(auto_match_col(ac_cols, ["服務人員", "居服員", "人員"])))
 
-        st.markdown("**3️⃣ 【服務紀錄明細表】欄位（只讀取 BA碼 與 G碼，採平地基準計薪）：**")
+        st.markdown("**2️⃣ 【服務紀錄明細表】欄位（只讀取 BA碼 與 G碼 採平地計薪，並同步統計次數比例）：**")
         sv_cols = list(df_svc_raw.columns)
         v1, v2, v3, v4, v5 = st.columns(5)
         with v1:
             sv_client = st.selectbox("明細-個案姓名", sv_cols, index=sv_cols.index(auto_match_col(sv_cols, ["個案姓名", "個案", "姓名"])))
         with v2:
-            sv_worker = st.selectbox("明細-服務人員", sv_cols, index=sv_cols.index(auto_match_col(sv_cols, ["服務人員", "居服員", "照服員", "人員"])))
+            sv_worker = st.selectbox("明細-服務人員", sv_cols, index=sv_cols.index(auto_match_col(sv_cols, ["服務人員姓名", "服務人員", "居服員", "照服員", "人員"])))
         with v3:
-            sv_code = st.selectbox("明細-服務代碼", sv_cols, index=sv_cols.index(auto_match_col(sv_cols, ["服務代碼", "照顧組合", "項目代碼", "代碼", "服務項目"])))
+            sv_code = st.selectbox("明細-服務代碼", sv_cols, index=sv_cols.index(auto_match_col(sv_cols, ["服務項目代碼", "服務代碼", "照顧組合", "項目代碼", "代碼"])))
         with v4:
             sv_cnt_opts = ["(每列算 1 次)"] + sv_cols
-            def_sv_cnt = auto_match_col(sv_cols, ["次數", "數量", "總次"])
+            def_sv_cnt = auto_match_col(sv_cols, ["數量(僅整數)", "數量", "次數", "總次"])
             def_sv_cnt_idx = sv_cnt_opts.index(def_sv_cnt) if def_sv_cnt in sv_cols and any(k in str(def_sv_cnt) for k in ["次數", "數量"]) else 0
             sv_count = st.selectbox("明細-次數/數量", sv_cnt_opts, index=def_sv_cnt_idx)
         with v5:
@@ -665,34 +636,55 @@ def render_home_care_payroll():
     # ==========================================
     # 核心計算引擎
     # ==========================================
-    if st.button("🚀 執行三表精準拆帳並產生薪資明細表", type="primary", use_container_width=True):
+    if st.button("🚀 執行精準拆帳並產生薪資明細表", type="primary", use_container_width=True):
         # ------------------------------------------
-        # Step 1：整理【當月班表】計算每個案的人員服務次數比例
-        sched_df = pd.DataFrame({
-            "個案姓名": df_sched[sc_client],
-            "服務人員": df_sched[sc_worker],
-            "次數": 1.0 if sc_count == "(每列算 1 次)" else pd.to_numeric(df_sched[sc_count], errors='coerce').fillna(1.0)
+        # Step 1：整理【服務紀錄明細表】
+        # ------------------------------------------
+        svc_clean = pd.DataFrame({
+            "個案姓名": df_svc_raw[sv_client],
+            "服務人員": df_svc_raw[sv_worker],
+            "服務代碼": df_svc_raw[sv_code],
+            "服務次數": 1.0 if sv_count == "(每列算 1 次)" else pd.to_numeric(df_svc_raw[sv_count], errors='coerce').fillna(1.0),
         })
-        sched_df = sched_df[sched_df["個案姓名"].notna() & sched_df["服務人員"].notna()].copy()
-        sched_df = sched_df[~sched_df["個案姓名"].astype(str).str.contains("總計|合計|小計", na=False)].copy()
-        sched_df["個案姓名"] = sched_df["個案姓名"].astype(str).str.strip()
-        sched_df["服務人員"] = sched_df["服務人員"].astype(str).str.strip()
-        sched_df["次數"] = 1.0 if sc_count == "(每列算 1 次)" else pd.to_numeric(sched_df[sc_count], errors='coerce').fillna(1.0)
+        if sv_fee != "(依代碼查平地單價表)":
+            svc_clean["平地總額"] = pd.to_numeric(df_svc_raw[sv_fee], errors='coerce').fillna(0.0)
+        else:
+            svc_clean["平地總額"] = np.nan
 
-        # 若班表單格仍有多人用頓號串接，自動拆開均分
-        sched_df["_w_list"] = sched_df["服務人員"].apply(lambda x: [w.strip() for w in re.split(r"[、,，/]+", str(x)) if w.strip()])
-        sched_df["_n"] = sched_df["_w_list"].apply(lambda l: max(len(l), 1))
-        sched_df["次數"] = sched_df["次數"] / sched_df["_n"]
-        sched_df = sched_df.explode("_w_list").reset_index(drop=True)
-        sched_df["服務人員"] = sched_df["_w_list"]
+        svc_clean = svc_clean[svc_clean["個案姓名"].notna() & svc_clean["服務人員"].notna() & svc_clean["服務代碼"].notna()].copy()
+        svc_clean = svc_clean[~svc_clean["個案姓名"].astype(str).str.contains("總計|合計|小計", na=False)].copy()
+        svc_clean["個案姓名"] = svc_clean["個案姓名"].astype(str).str.strip()
+        svc_clean["服務人員"] = svc_clean["服務人員"].astype(str).str.strip()
+        svc_clean["服務代碼"] = svc_clean["服務代碼"].apply(extract_code_prefix)
 
-        worker_client_cnt = sched_df.groupby(["個案姓名", "服務人員"])["次數"].sum().reset_index().rename(columns={"次數": "個人服務次數"})
+        svc_clean["_w_list"] = svc_clean["服務人員"].apply(lambda x: [w.strip() for w in re.split(r"[、,，/]+", str(x)) if w.strip()])
+        svc_clean["_n"] = svc_clean["_w_list"].apply(lambda l: max(len(l), 1))
+        svc_clean["服務次數"] = svc_clean["服務次數"] / svc_clean["_n"]
+        if sv_fee != "(依代碼查平地單價表)":
+            svc_clean["平地總額"] = svc_clean["平地總額"] / svc_clean["_n"]
+        svc_clean = svc_clean.explode("_w_list").reset_index(drop=True)
+        svc_clean["服務人員"] = svc_clean["_w_list"]
+
+        worker_client_cnt = svc_clean.groupby(["個案姓名", "服務人員"])["服務次數"].sum().reset_index().rename(columns={"服務次數": "個人服務次數"})
         client_tot_cnt = worker_client_cnt.groupby("個案姓名")["個人服務次數"].sum().reset_index().rename(columns={"個人服務次數": "該案總服務次數"})
         ratio_df = pd.merge(worker_client_cnt, client_tot_cnt, on="個案姓名")
         ratio_df["次數比例"] = ratio_df["個人服務次數"] / ratio_df["該案總服務次數"]
 
+        bg_df = svc_clean[svc_clean["服務代碼"].str.startswith(("BA", "G"))].copy()
+        if sv_fee == "(依代碼查平地單價表)":
+            def get_plain_price(c):
+                if c in price_map:
+                    return price_map[c]["plain"]
+                base_c = c.split("-")[0]
+                return price_map.get(base_c, {"plain": 0})["plain"]
+
+            bg_df["平地單價"] = bg_df["服務代碼"].apply(get_plain_price)
+            bg_df["平地總額"] = bg_df["平地單價"] * bg_df["服務次數"]
+
+        bg_df["居服員實領"] = bg_df["平地總額"] * (bg_share_pct / 100.0)
+
         # ------------------------------------------
-        # Step 2：計算【A碼核銷表】（強制只抓 6 欄 + 嚴格套用內規）
+        # Step 2：計算【A碼核銷表】
         # ------------------------------------------
         a_df = pd.DataFrame({
             "服務代碼": df_a_raw[ac_code],
@@ -712,7 +704,6 @@ def render_home_care_payroll():
         a_df["服務人員"] = a_df["服務人員"].fillna("").astype(str).str.strip()
         a_df.loc[a_df["服務人員"].isin(["nan", "None", ""]), "服務人員"] = ""
 
-        # 將每列拆解為獨立日期與獨立人員，精準處理「同個案同代碼同日期 -> 人頭均分」
         expanded_a_rows = []
         for idx_row, r in a_df.iterrows():
             code = r["服務代碼"]
@@ -722,10 +713,6 @@ def render_home_care_payroll():
             raw_dates = [d.strip() for d in re.split(r"[,，、\s]+", r["服務日期"]) if d.strip() and d.strip() != "nan"]
             raw_workers = [w.strip() for w in re.split(r"[、,，/]+", r["服務人員"]) if w.strip()]
 
-            # 判定公定單價與給薪成數：
-            # 1) AA09 / GA09 -> 500/日 100% 實領
-            # 2) AA04 / AA11 -> 公定單價 100% 全額給薪
-            # 3) 其餘一般 A碼 -> 公定單價 55拆帳 (50%)
             unit_p = price_map.get(code, {"plain": 0})["plain"]
             if code.startswith(("AA09", "GA09")):
                 unit_p = custom_aa09
@@ -735,7 +722,6 @@ def render_home_care_payroll():
             else:
                 pay_rate = a_share_pct / 100.0
 
-            # 情況 A：該列明確寫了多位服務人員（例如同日多人服務，用頓號串接）-> 依人頭均分
             if len(raw_workers) > 1:
                 n_w = len(raw_workers)
                 for w in raw_workers:
@@ -750,11 +736,9 @@ def render_home_care_payroll():
                         "服務人員": w,
                         "_date_key": r["服務日期"] if r["服務日期"] else f"row_{idx_row}"
                     })
-            # 情況 B：該列只寫了 1 位服務人員 -> 直接歸該員（若同個案同代碼同日期出現兩列不同人，後面再按同日人頭均分）
             elif len(raw_workers) == 1:
                 w = raw_workers[0]
                 if len(raw_dates) > 1 and abs(raw_qty - len(raw_dates)) < 0.01:
-                    # 逐日展開以便精準偵測「同個案+同代碼+同日期」是否有其他人重複出現
                     for d in raw_dates:
                         expanded_a_rows.append({
                             "服務代碼": code,
@@ -779,7 +763,6 @@ def render_home_care_payroll():
                         "服務人員": w,
                         "_date_key": r["服務日期"] if r["服務日期"] else f"row_{idx_row}"
                     })
-            # 情況 C：該列「服務人員」空白（月結型一般 A 碼，如 AA01/AA02/AA07 未指定單日人員）-> 依【當月班表】次數比例拆帳
             else:
                 matched_workers = ratio_df[ratio_df["個案姓名"] == cname]
                 if not matched_workers.empty:
@@ -805,13 +788,12 @@ def render_home_care_payroll():
                         "數量": raw_qty,
                         "小計": unit_p * raw_qty * pay_rate,
                         "服務日期": r["服務日期"],
-                        "服務人員": "⚠️ 無班表紀錄(需手動指定)",
+                        "服務人員": "⚠️ 無明細紀錄(需手動指定)",
                         "_date_key": f"unmatched_{idx_row}"
                     })
 
         exp_a_df = pd.DataFrame(expanded_a_rows)
 
-        # 【關鍵規則】檢查「同個案 + 同代碼 + 同日期 (_date_key)」是否有多位不同服務人員 -> 若有，自動依人頭均分！
         if not exp_a_df.empty:
             valid_date_mask = ~exp_a_df["_date_key"].astype(str).str.startswith(("row_", "monthly_", "unmatched_"))
             same_day_counts = (
@@ -824,7 +806,6 @@ def render_home_care_payroll():
             exp_a_df["數量"] = exp_a_df["數量"] / exp_a_df["_same_day_heads"]
             exp_a_df["小計"] = exp_a_df["小計"] / exp_a_df["_same_day_heads"]
 
-            # 彙整成個人薪資單所需的乾淨列（同居服員 + 同個案 + 同代碼合併顯示，日期串接）
             def join_dates(s):
                 vals = [str(x).strip() for x in s if str(x).strip() and str(x).strip() != "nan"]
                 return ",".join(dict.fromkeys(vals))
@@ -843,52 +824,7 @@ def render_home_care_payroll():
             a_split_df = pd.DataFrame(columns=["服務人員", "服務代碼", "服務項目類別", "個案姓名", "給付價格", "數量", "小計", "服務日期"])
 
         # ------------------------------------------
-        # Step 3：計算【服務紀錄明細表】（只讀取 BA碼 與 G碼，全採平地單價）
-        # ------------------------------------------
-        bg_raw = pd.DataFrame({
-            "個案姓名": df_svc_raw[sv_client],
-            "服務人員": df_svc_raw[sv_worker],
-            "服務代碼": df_svc_raw[sv_code],
-            "服務次數": 1.0 if sv_count == "(每列算 1 次)" else pd.to_numeric(df_svc_raw[sv_count], errors='coerce').fillna(1.0),
-        })
-        if sv_fee != "(依代碼查平地單價表)":
-            bg_raw["平地總額"] = pd.to_numeric(df_svc_raw[sv_fee], errors='coerce').fillna(0.0)
-        else:
-            bg_raw["平地總額"] = np.nan
-
-        bg_raw = bg_raw[bg_raw["個案姓名"].notna() & bg_raw["服務人員"].notna() & bg_raw["服務代碼"].notna()].copy()
-        bg_raw = bg_raw[~bg_raw["個案姓名"].astype(str).str.contains("總計|合計|小計", na=False)].copy()
-        bg_raw["個案姓名"] = bg_raw["個案姓名"].astype(str).str.strip()
-        bg_raw["服務人員"] = bg_raw["服務人員"].astype(str).str.strip()
-        bg_raw["服務代碼"] = bg_raw["服務代碼"].apply(extract_code_prefix)
-
-        # 嚴格過濾：只讀取 BA 開頭 與 G 開頭的代碼！
-        bg_df = bg_raw[bg_raw["服務代碼"].str.startswith(("BA", "G"))].copy()
-
-        # 若明細表單格仍有頓號多人，拆開均分
-        bg_df["_w_list"] = bg_df["服務人員"].apply(lambda x: [w.strip() for w in re.split(r"[、,，/]+", str(x)) if w.strip()])
-        bg_df["_n"] = bg_df["_w_list"].apply(lambda l: max(len(l), 1))
-        bg_df["服務次數"] = bg_df["服務次數"] / bg_df["_n"]
-        if sv_fee != "(依代碼查平地單價表)":
-            bg_df["平地總額"] = bg_df["平地總額"] / bg_df["_n"]
-        bg_df = bg_df.explode("_w_list").reset_index(drop=True)
-        bg_df["服務人員"] = bg_df["_w_list"]
-
-        if sv_fee == "(依代碼查平地單價表)":
-            def get_plain_price(c):
-                if c in price_map:
-                    return price_map[c]["plain"]
-                base_c = c.split("-")[0]
-                return price_map.get(base_c, {"plain": 0})["plain"]
-
-            bg_df["平地單價"] = bg_df["服務代碼"].apply(get_plain_price)
-            bg_df["平地總額"] = bg_df["平地單價"] * bg_df["服務次數"]
-
-        # 單筆明細保留小數，避免逐筆進位產生尾差
-        bg_df["居服員實領"] = bg_df["平地總額"] * (bg_share_pct / 100.0)
-
-        # ------------------------------------------
-        # Step 4：彙總全機構總表與產生圖一格式 Excel
+        # Step 3：彙總全機構總表（零尾差）
         # ------------------------------------------
         bg_sum = bg_df.groupby("服務人員")[["平地總額", "居服員實領"]].sum().reset_index().rename(
             columns={"平地總額": "BA/G碼平地總額", "居服員實領": "工作薪資(BA+G碼)"}
@@ -927,7 +863,7 @@ def render_home_care_payroll():
         m_label = res["month_label"]
 
         valid_workers = [w for w in final_payroll["服務人員"].tolist() if not str(w).startswith("⚠️")]
-        st.success(f"✅ 三表精準核算完成！共為 {len(valid_workers)} 位居服員產出專屬薪資明細表：")
+        st.success(f"✅ 雙表精準核算完成！共為 {len(valid_workers)} 位居服員產出專屬薪資明細表：")
 
         m1, m2, m3 = st.columns(3)
         m1.metric("全機構應發小計 (A+BA/G)", f"${final_payroll['本月應發小計(A+BA/G)'].sum():,.0f}")
@@ -956,7 +892,7 @@ def render_home_care_payroll():
                 w_bg_view = bg_df[bg_df["服務人員"] == preview_worker].groupby("個案姓名", as_index=False, sort=False).agg({
                     "服務代碼": lambda s: ",".join(dict.fromkeys([str(x) for x in s if str(x)])),
                     "服務次數": "sum",
-                    "居服員實領": "sum"
+                    "居服員實領": lambda x: round(sum(x), 0)
                 }).rename(columns={"居服員實領": "金額(元)"})
                 st.dataframe(w_bg_view, use_container_width=True, hide_index=True)
 
@@ -967,7 +903,7 @@ def render_home_care_payroll():
         dl_col1, dl_col2 = st.columns(2)
         with dl_col1:
             st.download_button(
-                label=f"🖨️ 下載【{m_label} {preview_worker} 薪資明細表.xlsx】（完全還原圖一版面）",
+                label=f"🖨️ 下載【{m_label} {preview_worker} 薪資明細表.xlsx】（完全還原機構版面）",
                 data=single_excel_bytes,
                 file_name=f"{m_label}_{preview_worker}_薪資明細表.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
