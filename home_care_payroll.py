@@ -74,220 +74,372 @@ def auto_match_col(columns, keywords):
                 return col
     return columns[0] if len(columns) > 0 else None
 
-def build_formatted_workbook(final_payroll, a_split_df, b_df, col_client, col_worker, col_code, col_count, month_label, a_share_pct, b_share_pct, target_workers=None):
-    """產生精美格式 Excel：target_workers=None 時匯出全機構總表+全員分頁；指定單人時匯出該員獨立薪資單"""
+def build_formatted_workbook(final_payroll, a_split_df, b_df, col_client, col_worker, col_code, col_count, org_name, month_label, a_share_pct, b_share_pct, target_workers=None):
+    """100% 還原機構專屬版型（上方 A碼服務明細 ＋ 左下薪資明細表 ＋ 右下個案BA碼統計細項 + 自動連動公式）"""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         wb = writer.book
-        # 若為全機構匯出，第一頁放總表；若為單人匯出，直接只放該員個人薪資明細表
         if target_workers is None:
             final_payroll.to_excel(writer, sheet_name="0_全機構薪資總表", index=False)
             workers = [w for w in final_payroll[col_worker].dropna().unique() if not str(w).startswith("⚠️")]
         else:
             workers = target_workers
 
-        font_title = Font(name="微軟正黑體", size=14, bold=True)
-        font_sec = Font(name="微軟正黑體", size=11, bold=True, color="1F4E78")
-        font_header = Font(name="微軟正黑體", size=10, bold=True)
-        font_body = Font(name="微軟正黑體", size=10)
-        font_total = Font(name="微軟正黑體", size=10, bold=True)
-        font_grand = Font(name="微軟正黑體", size=11, bold=True, color="C00000")
+        # 字型與樣式設定
+        f_org = Font(name="微軟正黑體", size=12, bold=True)
+        f_sub = Font(name="微軟正黑體", size=12, bold=True)
+        f_worker = Font(name="微軟正黑體", size=11, bold=True)
+        f_th = Font(name="微軟正黑體", size=10, bold=True)
+        f_td = Font(name="微軟正黑體", size=10)
+        f_td_bold = Font(name="微軟正黑體", size=10, bold=True)
+        f_red_tot = Font(name="微軟正黑體", size=11, bold=True)
+        f_right_title = Font(name="微軟正黑體", size=10, bold=True)
 
-        fill_header_a = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
-        fill_header_b = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
-        fill_total = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
-        fill_grand = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+        fill_pink = PatternFill(start_color="E6B8B7", end_color="E6B8B7", fill_type="solid")
+        fill_peach = PatternFill(start_color="FCD5B4", end_color="FCD5B4", fill_type="solid")
+        fill_gray_hdr = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+        fill_gray_sub = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
 
-        thin_side = Side(border_style="thin", color="808080")
-        border_box = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+        thin = Side(border_style="thin", color="000000")
+        med = Side(border_style="medium", color="000000")
+        gray_thin = Side(border_style="thin", color="808080")
 
-        align_center = Alignment(horizontal="center", vertical="center")
-        align_left = Alignment(horizontal="left", vertical="center")
-        align_right = Alignment(horizontal="right", vertical="center")
+        b_grid = Border(left=thin, right=thin, top=thin, bottom=thin)
+        b_right_grid = Border(left=gray_thin, right=gray_thin, top=gray_thin, bottom=gray_thin)
+
+        al_c = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        al_l = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        al_r = Alignment(horizontal="right", vertical="center")
 
         for worker in workers:
-            safe_sheet_name = str(worker)[:30].replace("/", "_").replace("\\", "_").replace("*", "").replace("?", "").replace("[", "").replace("]", "")
-            ws = wb.create_sheet(title=safe_sheet_name)
+            safe_name = str(worker)[:30].replace("/", "_").replace("\\", "_").replace("*", "").replace("?", "").replace("[", "").replace("]", "")
+            ws = wb.create_sheet(title=safe_name)
 
-            # 設定 A4 列印版面（橫向/縱向自動縮放至 1 頁寬，方便行政直接列印）
+            # A4 單頁寬自動縮放列印設定
             ws.page_setup.fitToWidth = 1
-            ws.page_setup.fitToHeight = 0
+            ws.page_setup.fitToHeight = 1
             ws.sheet_properties.pageSetUpPr.fitToPage = True
 
+            # =========================================================
+            # 上半部：A碼服務明細 (Columns A ~ G)
+            # =========================================================
             ws.merge_cells("A1:G1")
-            ws["A1"] = f"{month_label} {worker} 薪資服務明細"
-            ws["A1"].font = font_title
-            ws["A1"].alignment = align_center
-            ws.row_dimensions[1].height = 28
+            ws["A1"] = org_name
+            ws["A1"].font = f_org
+            ws["A1"].alignment = al_c
 
-            # 上半部：A 碼薪資明細表
-            ws["A3"] = "【一、A碼個案管理費拆帳明細】"
-            ws["A3"].font = font_sec
+            ws.merge_cells("A2:G2")
+            ws["A2"] = "A碼服務明細"
+            ws["A2"].font = f_sub
+            ws["A2"].alignment = al_c
 
-            a_headers = [
-                "個案姓名",
-                "個案總服務次數",
-                "服務員服務次數",
-                "A碼服務項目",
-                "A碼金額",
-                "個人分攤A碼金額",
-                f"A碼拆帳{a_share_pct}%"
-            ]
-            row_idx = 4
-            for c_i, h_text in enumerate(a_headers, start=1):
-                cell = ws.cell(row=row_idx, column=c_i, value=h_text)
-                cell.font = font_header
-                cell.fill = fill_header_a
-                cell.alignment = align_center
-                cell.border = border_box
-            ws.row_dimensions[row_idx].height = 22
+            ws.merge_cells("A3:B3")
+            ws["A3"] = f"居服員: {worker}"
+            ws["A3"].font = f_worker
+            ws["A3"].alignment = al_l
 
-            w_a_df = a_split_df[a_split_df[col_worker] == worker] if not a_split_df.empty else pd.DataFrame()
-            a_sum_pay = 0.0
+            a_headers = ["服務代碼", "服務項目類別", "個案姓名", "給付價格", "數量", "小計", "服務日期"]
+            r_idx = 4
+            for c_i, h in enumerate(a_headers, start=1):
+                cell = ws.cell(row=r_idx, column=c_i, value=h)
+                cell.font = f_th
+                cell.alignment = al_c
+                cell.border = Border(left=thin, right=thin, top=med, bottom=med)
+            ws.row_dimensions[r_idx].height = 22
 
+            w_a_df = a_split_df[a_split_df[col_worker] == worker].copy() if not a_split_df.empty else pd.DataFrame()
+            
+            # 拆成「一般 A 碼 (AA01~AA08)」與「假日碼 (AA09/GA09)」兩區塊
             if not w_a_df.empty:
-                for _, r in w_a_df.iterrows():
-                    row_idx += 1
-                    personal_gross = float(r["核銷總額"]) * float(r["分配比例"])
-                    personal_pay = float(r["居服員實領"])
-                    a_sum_pay += personal_pay
+                df_a_reg = w_a_df[~w_a_df[col_code].str.startswith(("AA09", "GA09"))].copy()
+                df_a_hol = w_a_df[w_a_df[col_code].str.startswith(("AA09", "GA09"))].copy()
+            else:
+                df_a_reg = pd.DataFrame()
+                df_a_hol = pd.DataFrame()
 
-                    vals = [
-                        r[col_client],
-                        round(float(r["該案總服務次數"]), 1) if pd.notna(r.get("該案總服務次數")) else 0,
-                        round(float(r["個人服務次數"]), 1) if pd.notna(r.get("個人服務次數")) else 0,
+            # 1) 一般 A 碼明細列
+            reg_start_row = r_idx + 1
+            if not df_a_reg.empty:
+                for _, r in df_a_reg.iterrows():
+                    r_idx += 1
+                    row_vals = [
                         r[col_code],
+                        r.get("_a_name", ""),
+                        r[col_client],
                         round(float(r["核銷總額"]), 0),
-                        round(personal_gross, 1),
-                        round(personal_pay, 0)
+                        round(float(r.get("_a_qty", 1)), 1),
+                        round(float(r["居服員實領"]), 0),
+                        r.get("_a_dates", "")
                     ]
-                    for c_i, val in enumerate(vals, start=1):
-                        cell = ws.cell(row=row_idx, column=c_i, value=val)
-                        cell.font = font_body
-                        cell.border = border_box
-                        if c_i in [1, 4]:
-                            cell.alignment = align_center
-                        elif c_i in [2, 3]:
-                            cell.alignment = align_center
-                            cell.number_format = "#,##0.#"
-                        elif c_i == 6:
-                            cell.alignment = align_right
-                            cell.number_format = "#,##0.0"
-                        else:
-                            cell.alignment = align_right
-                            cell.number_format = "#,##0"
+                    for c_i, v in enumerate(row_vals, start=1):
+                        c = ws.cell(row=r_idx, column=c_i, value=v)
+                        c.font = f_td
+                        c.border = b_grid
+                        c.alignment = al_l if c_i in [2, 7] else al_c
+                        if c_i in [4, 6]:
+                            c.number_format = "#,##0"
+                    ws.row_dimensions[r_idx].height = 24
             else:
-                row_idx += 1
-                ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=7)
-                cell = ws.cell(row=row_idx, column=1, value="本月無 A 碼分攤紀錄")
-                cell.font = font_body
-                cell.alignment = align_center
+                r_idx += 1
                 for c_i in range(1, 8):
-                    ws.cell(row=row_idx, column=c_i).border = border_box
+                    c = ws.cell(row=r_idx, column=c_i, value="-" if c_i == 1 else "")
+                    c.font = f_td
+                    c.border = b_grid
+                    c.alignment = al_c
 
-            row_idx += 1
-            ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=6)
-            ws.cell(row=row_idx, column=1, value="A碼總計").alignment = align_right
-            ws.cell(row=row_idx, column=7, value=round(a_sum_pay, 0)).number_format = "#,##0"
-            ws.cell(row=row_idx, column=7).alignment = align_right
+            reg_end_row = r_idx
+            # 一般 A 碼粉紅底總計列
+            r_idx += 1
+            reg_tot_row = r_idx
             for c_i in range(1, 8):
-                c = ws.cell(row=row_idx, column=c_i)
-                c.font = font_total
-                c.fill = fill_total
-                c.border = border_box
+                c = ws.cell(row=r_idx, column=c_i)
+                c.border = b_grid
+                if c_i == 6:
+                    c.value = f"=SUM(F{reg_start_row}:F{reg_end_row})"
+                    c.font = f_red_tot
+                    c.fill = fill_pink
+                    c.alignment = al_c
+                    c.number_format = "#,##0"
+            ws.row_dimensions[r_idx].height = 22
 
-            # 下半部：B 碼服務薪資明細表（採平地計薪基準）
-            row_idx += 2
-            ws.cell(row=row_idx, column=1, value="【二、B碼照顧服務費明細（依公司規定採平地標準拆帳）】").font = font_sec
-
-            row_idx += 1
-            b_headers = [
-                "個案姓名",
-                "服務項目類別",
-                "服務次數(分攤)",
-                "平地計薪金額",
-                f"公司拆帳{b_share_pct}%"
-            ]
-            for c_i, h_text in enumerate(b_headers, start=1):
-                cell = ws.cell(row=row_idx, column=c_i, value=h_text)
-                cell.font = font_header
-                cell.fill = fill_header_b
-                cell.alignment = align_center
-                cell.border = border_box
-            ws.row_dimensions[row_idx].height = 22
-
-            w_b_df = b_df[b_df[col_worker] == worker] if not b_df.empty else pd.DataFrame()
-            b_sum_pay = 0.0
-
-            if not w_b_df.empty:
-                b_grouped = (
-                    w_b_df.groupby([col_client, col_code], as_index=False)
-                    .agg({
-                        col_count: "sum",
-                        "核銷總額(平地基準)": "sum",
-                        "居服員實領": "sum"
-                    })
-                )
-                for _, r in b_grouped.iterrows():
-                    row_idx += 1
-                    b_pay = float(r["居服員實領"])
-                    b_sum_pay += b_pay
-                    vals = [
-                        r[col_client],
+            # 2) 假日碼 (AA09 / GA09) 明細列
+            hol_start_row = r_idx + 1
+            if not df_a_hol.empty:
+                for _, r in df_a_hol.iterrows():
+                    r_idx += 1
+                    qty_val = float(r.get("_a_qty", 1))
+                    unit_val = round(float(r["居服員實領"]) / qty_val, 0) if qty_val > 0 else 500
+                    row_vals = [
                         r[col_code],
-                        round(float(r[col_count]), 1),
-                        round(float(r["核銷總額(平地基準)"]), 0),
-                        round(b_pay, 0)
+                        r.get("_a_name", "例假日服務"),
+                        r[col_client],
+                        unit_val,
+                        round(qty_val, 1),
+                        round(float(r["居服員實領"]), 0),
+                        r.get("_a_dates", "")
                     ]
-                    for c_i, val in enumerate(vals, start=1):
-                        cell = ws.cell(row=row_idx, column=c_i, value=val)
-                        cell.font = font_body
-                        cell.border = border_box
-                        if c_i == 1:
-                            cell.alignment = align_center
-                        elif c_i == 2:
-                            cell.alignment = align_left
-                        elif c_i == 3:
-                            cell.alignment = align_center
-                            cell.number_format = "#,##0.#"
-                        else:
-                            cell.alignment = align_right
-                            cell.number_format = "#,##0"
+                    for c_i, v in enumerate(row_vals, start=1):
+                        c = ws.cell(row=r_idx, column=c_i, value=v)
+                        c.font = f_td
+                        c.border = b_grid
+                        c.alignment = al_l if c_i in [2, 7] else al_c
+                        if c_i in [4, 6]:
+                            c.number_format = "#,##0"
+                    ws.row_dimensions[r_idx].height = 20
             else:
-                row_idx += 1
-                ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=5)
-                ws.cell(row=row_idx, column=1, value="本月無 B 碼服務紀錄").alignment = align_center
-                for c_i in range(1, 6):
-                    ws.cell(row=row_idx, column=c_i).border = border_box
+                r_idx += 1
+                for c_i in range(1, 8):
+                    c = ws.cell(row=r_idx, column=c_i, value="-" if c_i == 1 else "")
+                    c.font = f_td
+                    c.border = b_grid
+                    c.alignment = al_c
 
-            row_idx += 1
-            ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=4)
-            ws.cell(row=row_idx, column=1, value="B碼總計").alignment = align_right
-            ws.cell(row=row_idx, column=5, value=round(b_sum_pay, 0)).number_format = "#,##0"
-            ws.cell(row=row_idx, column=5).alignment = align_right
-            for c_i in range(1, 6):
-                c = ws.cell(row=row_idx, column=c_i)
-                c.font = font_total
-                c.fill = fill_total
-                c.border = border_box
+            hol_end_row = r_idx
+            # 假日碼粉紅底總計列
+            r_idx += 1
+            hol_tot_row = r_idx
+            for c_i in range(1, 8):
+                c = ws.cell(row=r_idx, column=c_i)
+                c.border = Border(left=thin, right=thin, top=thin, bottom=med)
+                if c_i == 6:
+                    c.value = f"=SUM(F{hol_start_row}:F{hol_end_row})"
+                    c.font = f_red_tot
+                    c.fill = fill_pink
+                    c.alignment = al_c
+                    c.number_format = "#,##0"
+            ws.row_dimensions[r_idx].height = 24
 
-            row_idx += 1
-            ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=4)
-            ws.cell(row=row_idx, column=1, value="本月應發總薪資（A碼總計 + B碼總計）").alignment = align_right
-            ws.cell(row=row_idx, column=5, value=round(a_sum_pay + b_sum_pay, 0)).number_format = "#,##0"
-            ws.cell(row=row_idx, column=5).alignment = align_right
-            for c_i in range(1, 6):
-                c = ws.cell(row=row_idx, column=c_i)
-                c.font = font_grand
-                c.fill = fill_grand
-                c.border = border_box
-            ws.row_dimensions[row_idx].height = 24
+            # =========================================================
+            # 下半部左側：薪資明細表 (Columns A ~ D)
+            # =========================================================
+            r_idx += 1
+            ws.merge_cells(start_row=r_idx, start_column=1, end_row=r_idx, end_column=4)
+            ws.cell(row=r_idx, column=1, value=org_name).font = f_th
+            ws.cell(row=r_idx, column=1).alignment = al_l
 
-            col_widths = {1: 14, 2: 26, 3: 16, 4: 18, 5: 16, 6: 18, 7: 16}
+            r_idx += 1
+            ws.merge_cells(start_row=r_idx, start_column=1, end_row=r_idx, end_column=4)
+            # 將 11506 轉成 115年06月薪資明細表
+            m_display = f"{month_label[:3]}年{month_label[3:]}月薪資明細表" if len(month_label) == 5 and month_label.isdigit() else f"{month_label} 薪資明細表"
+            ws.cell(row=r_idx, column=1, value=m_display).font = f_th
+            ws.cell(row=r_idx, column=1).alignment = al_c
+
+            r_idx += 1
+            name_row = r_idx
+            ws.cell(row=name_row, column=1, value="姓名:").font = f_td_bold
+            ws.cell(row=name_row, column=1).alignment = al_l
+            ws.cell(row=name_row, column=2, value=worker).font = f_sub
+            ws.cell(row=name_row, column=2).alignment = al_c
+
+            # 右側表格從 name_row 同一列開始對齊！「個案服務拆帳統計細項」(Columns E ~ G)
+            right_start_row = name_row
+            ws.merge_cells(start_row=right_start_row, start_column=5, end_row=right_start_row, end_column=7)
+            rc_title = ws.cell(row=right_start_row, column=5, value="個案服務拆帳統計細項")
+            rc_title.font = f_right_title
+            rc_title.fill = fill_gray_hdr
+            rc_title.alignment = al_c
+            for ci in range(5, 8):
+                ws.cell(row=right_start_row, column=ci).border = b_right_grid
+
+            # 左表標題列
+            left_hdr_row = name_row + 1
+            for ci, txt in [(1, ""), (2, "項目"), (3, "金額"), (4, "備註")]:
+                c = ws.cell(row=left_hdr_row, column=ci, value=txt)
+                c.font = f_th
+                c.alignment = al_c
+                c.border = Border(left=thin, right=thin, top=med, bottom=thin)
+
+            # 右表標題列
+            ws.cell(row=left_hdr_row, column=5, value="").fill = fill_gray_sub
+            ws.cell(row=left_hdr_row, column=6, value="個案姓名").font = f_th
+            ws.cell(row=left_hdr_row, column=6).fill = fill_gray_sub
+            ws.cell(row=left_hdr_row, column=6).alignment = al_c
+            ws.cell(row=left_hdr_row, column=7, value="BA碼").font = f_th
+            ws.cell(row=left_hdr_row, column=7).fill = fill_gray_sub
+            ws.cell(row=left_hdr_row, column=7).alignment = al_c
+            for ci in range(5, 8):
+                ws.cell(row=left_hdr_row, column=ci).border = b_right_grid
+
+            # 準備右下角個案 B 碼彙總資料（依個案姓名加總實領金額）
+            w_b_df = b_df[b_df[col_worker] == worker] if not b_df.empty else pd.DataFrame()
+            if not w_b_df.empty:
+                client_b_summary = w_b_df.groupby(col_client, as_index=False, sort=False)["居服員實領"].sum()
+            else:
+                client_b_summary = pd.DataFrame(columns=[col_client, "居服員實領"])
+
+            # 寫入右側 1~20 列明細與底部「薪資小計 (A)」
+            r_data_start = left_hdr_row + 1
+            for i in range(20):
+                curr_r = r_data_start + i
+                c_idx_cell = ws.cell(row=curr_r, column=5, value=i + 1)
+                c_idx_cell.font = f_td
+                c_idx_cell.alignment = al_c
+                c_idx_cell.border = b_right_grid
+
+                if i < len(client_b_summary):
+                    c_name_val = client_b_summary.iloc[i][col_client]
+                    c_amt_val = round(float(client_b_summary.iloc[i]["居服員實領"]), 0)
+                else:
+                    c_name_val = ""
+                    c_amt_val = ""
+
+                c_name_cell = ws.cell(row=curr_r, column=6, value=c_name_val)
+                c_name_cell.font = f_td
+                c_name_cell.alignment = al_c
+                c_name_cell.border = b_right_grid
+
+                c_amt_cell = ws.cell(row=curr_r, column=7, value=c_amt_val)
+                c_amt_cell.font = f_td
+                c_amt_cell.alignment = al_r
+                c_amt_cell.number_format = '#,##0" 元"' if c_amt_val != "" else '@" 元"'
+                c_amt_cell.border = b_right_grid
+
+            r_data_end = r_data_start + 19
+            r_sub_row = r_data_end + 1
+            ws.merge_cells(start_row=r_sub_row, start_column=5, end_row=r_sub_row, end_column=6)
+            ws.cell(row=r_sub_row, column=5, value="薪資小計 (A) :").font = f_th
+            ws.cell(row=r_sub_row, column=5).alignment = al_r
+            sub_val_cell = ws.cell(row=r_sub_row, column=7, value=f"=SUM(G{r_data_start}:G{r_data_end})")
+            sub_val_cell.font = f_td_bold
+            sub_val_cell.alignment = al_r
+            sub_val_cell.number_format = '#,##0" 元"'
+            for ci in range(5, 8):
+                ws.cell(row=r_sub_row, column=ci).fill = fill_gray_hdr
+                ws.cell(row=r_sub_row, column=ci).border = b_right_grid
+
+            # 寫入左下角「應領金額」12 列 + 「應扣金額」6 列 + 「實領薪資」1 列（共 19 列）
+            earn_start = left_hdr_row + 1
+            earn_items = [
+                ("工作薪資", f"=G{r_sub_row}"),          # 自動連動右側 B碼小計
+                ("偏鄉交通補助", 0),
+                ("偏鄉獎勵津貼", 0),
+                ("交通費", 0),
+                ("轉場津貼", 0),
+                ("AA05.06.07", f"=F{reg_tot_row}"),     # 自動連動上方一般A碼總計
+                ("A碼假日(AA09)", f"=F{hol_tot_row}"),  # 自動連動上方假日碼總計
+                ("AA11 (身障/失智)", 0),
+                ("喘息", 0),
+                ("其它", 0),
+            ]
+            for idx_e, (label, val) in enumerate(earn_items):
+                cr = earn_start + idx_e
+                ws.cell(row=cr, column=2, value=label).font = f_td
+                ws.cell(row=cr, column=2).alignment = al_l
+                vc = ws.cell(row=cr, column=3, value=val)
+                vc.font = f_td
+                vc.alignment = al_c
+                vc.number_format = "#,##0;-#,##0;\"-\""
+                for ci in range(1, 5):
+                    ws.cell(row=cr, column=ci).border = b_grid
+
+            earn_tot_row = earn_start + len(earn_items)
+            ws.cell(row=earn_tot_row, column=2, value="總計").font = f_td_bold
+            ws.cell(row=earn_tot_row, column=2).alignment = al_l
+            et_cell = ws.cell(row=earn_tot_row, column=3, value=f"=SUM(C{earn_start}:C{earn_tot_row-1})")
+            et_cell.font = f_td_bold
+            et_cell.alignment = al_c
+            et_cell.number_format = "#,##0"
+            for ci in range(1, 5):
+                ws.cell(row=earn_tot_row, column=ci).border = b_grid
+
+            # 合併左側「應領金額」垂直儲存格
+            ws.merge_cells(start_row=earn_start, start_column=1, end_row=earn_tot_row, end_column=1)
+            ws.cell(row=earn_start, column=1, value="應領金額").font = f_th
+            ws.cell(row=earn_start, column=1).alignment = al_c
+
+            # 應扣金額區塊
+            ded_start = earn_tot_row + 1
+            ded_items = [
+                ("勞保費", 0),
+                ("健保費", 0),
+                ("法扣", 0),
+                ("其他", 0),
+                ("福利金", 0),
+            ]
+            for idx_d, (label, val) in enumerate(ded_items):
+                cr = ded_start + idx_d
+                ws.cell(row=cr, column=2, value=label).font = f_td
+                ws.cell(row=cr, column=2).alignment = al_l
+                vc = ws.cell(row=cr, column=3, value=val)
+                vc.font = f_td
+                vc.alignment = al_c
+                vc.number_format = "#,##0"
+                for ci in range(1, 5):
+                    ws.cell(row=cr, column=ci).border = b_grid
+
+            ded_tot_row = ded_start + len(ded_items)
+            ws.cell(row=ded_tot_row, column=2, value="總計").font = f_td_bold
+            ws.cell(row=ded_tot_row, column=2).alignment = al_l
+            dt_cell = ws.cell(row=ded_tot_row, column=3, value=f"=SUM(C{ded_start}:C{ded_tot_row-1})")
+            dt_cell.font = f_td_bold
+            dt_cell.alignment = al_c
+            dt_cell.number_format = "#,##0"
+            for ci in range(1, 5):
+                ws.cell(row=ded_tot_row, column=ci).border = b_grid
+
+            ws.merge_cells(start_row=ded_start, start_column=1, end_row=ded_tot_row, end_column=1)
+            ws.cell(row=ded_start, column=1, value="應扣金額").font = f_th
+            ws.cell(row=ded_start, column=1).alignment = al_c
+
+            # 最底列：實領薪資 (=應領總計 - 應扣總計)
+            net_row = ded_tot_row + 1
+            ws.merge_cells(start_row=net_row, start_column=1, end_row=net_row, end_column=2)
+            ws.cell(row=net_row, column=1, value="實領薪資").font = f_th
+            ws.cell(row=net_row, column=1).alignment = al_c
+            net_cell = ws.cell(row=net_row, column=3, value=f"=C{earn_tot_row}-C{ded_tot_row}")
+            net_cell.font = f_red_tot
+            net_cell.fill = fill_peach
+            net_cell.alignment = al_c
+            net_cell.number_format = "#,##0"
+            for ci in range(1, 5):
+                ws.cell(row=net_row, column=ci).border = Border(left=thin, right=thin, top=thin, bottom=med)
+            ws.row_dimensions[net_row].height = 24
+
+            # 欄寬設定（完美還原比例）
+            col_widths = {1: 11, 2: 24, 3: 13, 4: 11, 5: 8, 6: 14, 7: 42}
             for col_i, width in col_widths.items():
                 ws.column_dimensions[get_column_letter(col_i)].width = width
 
-        # 若為單人匯出，刪除 openpyxl 預設留下的空白預設工作表（如果有的話）
         if "Sheet" in wb.sheetnames and len(wb.sheetnames) > 1:
             del wb["Sheet"]
 
@@ -295,31 +447,28 @@ def build_formatted_workbook(final_payroll, a_split_df, b_df, col_client, col_wo
 
 def render_home_care_payroll():
     st.title("💰 居家服務薪資拆帳與核銷對帳引擎")
-    st.caption("自動拆解多人串接姓名，支援【單人獨立薪資單下載列印】與【全機構一人一分頁整批匯出】。")
+    st.caption("100% 還原機構專屬【A碼服務明細 ＋ 薪資明細表 ＋ 個案服務拆帳統計細項】雙欄自動連動報表。")
 
-    with st.expander("⚙️ 機構拆帳內規與報表抬頭設定", expanded=True):
+    with st.expander("⚙️ 機構抬頭、薪資年月與拆帳內規設定", expanded=True):
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            st.markdown("**1️⃣ 薪資月份與分潤成數**")
-            month_label = st.text_input("薪資年月抬頭（顯示於個人薪資單）", value="11506")
-            a_share_pct = st.slider("A碼 居服員分潤比例 (%)", 0, 100, 50, step=5, help="55拆帳請設 50%")
-            b_share_pct = st.slider("B碼 居服員分潤比例 (%)", 0, 100, 60, step=5, help="64拆帳請設 60%")
+            st.markdown("**1️⃣ 機構名稱與薪資年月**")
+            org_name = st.text_input("機構全銜", value="南門長照社團法人附設屏東縣私立南門綜合長照機構")
+            month_label = st.text_input("薪資年月代碼（如 11506）", value="11506")
             
         with col2:
-            st.markdown("**2️⃣ 原民區 / 平地計價規則**")
-            a_use_indigenous = st.checkbox("A碼 依核銷/區域套用原民加成", value=True)
-            b_use_indigenous = st.checkbox("B碼 套用原民加成（未勾選則全採平地價）", value=False)
-            split_method = st.selectbox(
-                "多人共照 A碼 分配依據",
-                ["依服務次數比例", "依人頭均分"],
-                index=0
-            )
+            st.markdown("**2️⃣ A/B 碼分潤與定額津貼**")
+            a_share_pct = st.slider("一般 A碼 居服員分潤 (%)", 0, 100, 50, step=5)
+            b_share_pct = st.slider("B碼 居服員分潤 (%)", 0, 100, 60, step=5)
+            custom_aa09 = st.number_input("AA09 假日定額實領 (元/天)", value=500, step=50)
+            custom_ga09 = st.number_input("GA09 假日定額實領 (元/天)", value=500, step=50)
             
         with col3:
-            st.markdown("**3️⃣ 特定代碼公定單價覆寫**")
-            custom_aa09 = st.number_input("AA09 公定單價 (元/天)", value=500, step=50)
-            custom_ga09 = st.number_input("GA09 公定單價 (元/天)", value=500, step=50)
+            st.markdown("**3️⃣ 計價與進位規則**")
+            a_use_indigenous = st.checkbox("一般 A碼 依核銷表計算", value=True)
+            b_use_indigenous = st.checkbox("B碼 套用原民加成（未勾選全算平地）", value=False)
+            split_method = st.selectbox("多人共照一般 A碼 分配依據", ["依服務次數比例", "依人頭均分"], index=0)
             round_to_int = st.checkbox("金額四捨五入至整數", value=True)
 
     price_map = DEFAULT_PRICE_TABLE.copy()
@@ -343,7 +492,7 @@ def render_home_care_payroll():
         )
 
     if not service_files:
-        st.info("👆 請先上傳 Jubo 或照管系統匯出的「服務清冊」Excel 檔以開始計算。")
+        st.info("👆 請先上傳 Jubo 匯出的「服務清冊」與「A碼清冊」Excel 檔以開始計算。")
         return
 
     df_service = read_uploaded_files(service_files)
@@ -371,7 +520,7 @@ def render_home_care_payroll():
     region_options = ["(無此欄位，全算平地)"] + s_cols
     default_reg = auto_match_col(s_cols, ["原民", "行政區", "居住行政區", "區域", "地區"])
     default_reg_idx = region_options.index(default_reg) if default_reg in s_cols and any(k in str(default_reg) for k in ["原民", "行政區", "區域"]) else 0
-    col_region = st.selectbox("原民/平地判斷欄位 (供無費用欄位查表時使用)", region_options, index=default_reg_idx)
+    col_region = st.selectbox("原民/平地判斷欄位", region_options, index=default_reg_idx)
 
     if not df_a_claim.empty:
         st.markdown("**A碼核銷表欄位對應：**")
@@ -389,9 +538,13 @@ def render_home_care_payroll():
             ac_worker_opts = ["(無，全依服務清冊比例分攤)"] + ac_cols
             def_ac_w = auto_match_col(ac_cols, ["服務人員", "居服員", "照服員", "人員"])
             def_ac_w_idx = ac_worker_opts.index(def_ac_w) if def_ac_w in ac_cols and any(k in str(def_ac_w) for k in ["服務人員", "居服員", "人員"]) else 0
-            ac_worker = st.selectbox("核銷表-指定服務人員", ac_worker_opts, index=def_ac_w_idx, help="若該列已填單一居服員姓名(如AA09)，則100%直接算給該員，不按全月次數比例拆帳")
-            
-    if st.button("🚀 開始自動拆帳並產生個人薪資單", type="primary", use_container_width=True):
+            ac_worker = st.selectbox("核銷表-指定服務人員", ac_worker_opts, index=def_ac_w_idx)
+
+        # 自動偵測 A碼核銷表的「服務項目類別(中文名稱)」與「服務日期」供報表完美呈現
+        ac_name_col = next((c for c in ac_cols if "項目類別" in str(c) or "項目名稱" in str(c)), None)
+        ac_date_col = next((c for c in ac_cols if "日期" in str(c)), None)
+
+    if st.button("🚀 開始自動拆帳並產生個人薪資明細表", type="primary", use_container_width=True):
         work_df = df_service.copy()
         work_df = work_df[work_df[col_client].notna() & work_df[col_worker].notna()].copy()
         work_df = work_df[~work_df[col_client].astype(str).str.contains("總計|合計|小計", na=False)].copy()
@@ -417,7 +570,7 @@ def render_home_care_payroll():
         work_df = work_df.explode("_worker_list").reset_index(drop=True)
         work_df[col_worker] = work_df["_worker_list"]
 
-        # Part A：雙模計算 B 碼薪資
+        # Part A：計算 B 碼薪資
         if col_direct_fee != "(無，依代碼查表計算)":
             b_df = work_df[~work_df[col_code].str.startswith(("AA", "GA", "A碼", "個案管理"))].copy()
             b_df["核銷總額(平地基準)"] = b_df[col_direct_fee]
@@ -457,15 +610,14 @@ def render_home_care_payroll():
         ratio_df["分配比例"] = ratio_df["個人服務次數"] / ratio_df["該案總服務次數"]
 
         if not df_a_claim.empty:
-            cols_to_take = [ac_client, ac_code, ac_qty, ac_amount]
-            if ac_worker != "(無，全依服務清冊比例分攤)":
-                cols_to_take.append(ac_worker)
-                a_raw_claim = df_a_claim[cols_to_take].copy()
-                a_raw_claim.columns = [col_client, col_code, "_a_qty", "清冊核銷原額", "_direct_worker"]
-            else:
-                a_raw_claim = df_a_claim[cols_to_take].copy()
-                a_raw_claim.columns = [col_client, col_code, "_a_qty", "清冊核銷原額"]
-                a_raw_claim["_direct_worker"] = ""
+            a_raw_claim = pd.DataFrame()
+            a_raw_claim[col_client] = df_a_claim[ac_client]
+            a_raw_claim[col_code] = df_a_claim[ac_code]
+            a_raw_claim["_a_qty"] = df_a_claim[ac_qty]
+            a_raw_claim["清冊核銷原額"] = df_a_claim[ac_amount]
+            a_raw_claim["_direct_worker"] = df_a_claim[ac_worker] if ac_worker != "(無，全依服務清冊比例分攤)" else ""
+            a_raw_claim["_a_name"] = df_a_claim[ac_name_col].fillna("") if ac_name_col else ""
+            a_raw_claim["_a_dates"] = df_a_claim[ac_date_col].fillna("") if ac_date_col else ""
 
             a_raw_claim = a_raw_claim[a_raw_claim[col_client].notna() & a_raw_claim[col_code].notna()].copy()
             a_raw_claim = a_raw_claim[~a_raw_claim[col_client].astype(str).str.contains("總計|合計|小計", na=False)].copy()
@@ -475,8 +627,9 @@ def render_home_care_payroll():
             a_raw_claim["清冊核銷原額"] = pd.to_numeric(a_raw_claim["清冊核銷原額"], errors='coerce').fillna(0)
             a_raw_claim["_direct_worker"] = a_raw_claim["_direct_worker"].fillna("").astype(str).str.strip()
             a_raw_claim.loc[a_raw_claim["_direct_worker"].isin(["nan", "None", ""]), "_direct_worker"] = ""
+            a_raw_claim["_a_name"] = a_raw_claim["_a_name"].astype(str).str.strip()
+            a_raw_claim["_a_dates"] = a_raw_claim["_a_dates"].astype(str).str.strip()
 
-            # 計算每列核銷總額與居服員總分潤池（AA09/GA09 直接實領 500×天數，其餘按55分帳）
             a_raw_claim["核銷總額"] = a_raw_claim["清冊核銷原額"]
             a_raw_claim["居服員總分潤池"] = a_raw_claim["清冊核銷原額"] * (a_share_pct / 100.0)
 
@@ -485,25 +638,35 @@ def render_home_care_payroll():
             a_raw_claim.loc[mask_aa09, "居服員總分潤池"] = a_raw_claim.loc[mask_aa09, "_a_qty"] * custom_aa09
             a_raw_claim.loc[mask_ga09, "居服員總分潤池"] = a_raw_claim.loc[mask_ga09, "_a_qty"] * custom_ga09
 
-            # 分流處理：
-            # 情況 1：A碼清冊該列已指定單一服務人員（且不含頓號多人），例如 AA09 寫「張敏」 -> 直接 100% 歸該員，不按全月次數比例拆！
             is_single_assigned = (a_raw_claim["_direct_worker"] != "") & (~a_raw_claim["_direct_worker"].str.contains(r"[、,，/]"))
-            
             assigned_df = a_raw_claim[is_single_assigned].copy()
             unassigned_df = a_raw_claim[~is_single_assigned].copy()
 
             split_parts = []
+            def join_unique_str(s):
+                vals = [str(x).strip() for x in s if str(x).strip() and str(x).strip() != "nan"]
+                return ",".join(dict.fromkeys(vals))
 
             if not assigned_df.empty:
-                assigned_grouped = assigned_df.groupby([col_client, col_code, "_direct_worker"], as_index=False)[["核銷總額", "居服員總分潤池"]].sum()
-                assigned_grouped = assigned_grouped.rename(columns={"_direct_worker": col_worker})
-                # 帶入該個案總服務次數與個人服務次數供報表顯示，但分配比例強制為 1.0 (100%)
+                assigned_grouped = assigned_df.groupby([col_client, col_code, "_direct_worker"], as_index=False).agg({
+                    "核銷總額": "sum",
+                    "居服員總分潤池": "sum",
+                    "_a_qty": "sum",
+                    "_a_name": join_unique_str,
+                    "_a_dates": join_unique_str
+                }).rename(columns={"_direct_worker": col_worker})
                 assigned_grouped = pd.merge(assigned_grouped, ratio_df[[col_client, col_worker, "該案總服務次數", "個人服務次數"]], on=[col_client, col_worker], how="left")
                 assigned_grouped["分配比例"] = 1.0
                 split_parts.append(assigned_grouped)
 
             if not unassigned_df.empty:
-                unassigned_grouped = unassigned_df.groupby([col_client, col_code], as_index=False)[["核銷總額", "居服員總分潤池"]].sum()
+                unassigned_grouped = unassigned_df.groupby([col_client, col_code], as_index=False).agg({
+                    "核銷總額": "sum",
+                    "居服員總分潤池": "sum",
+                    "_a_qty": "sum",
+                    "_a_name": join_unique_str,
+                    "_a_dates": join_unique_str
+                })
                 merged_unassigned = pd.merge(unassigned_grouped, ratio_df, on=col_client, how="left")
                 merged_unassigned[col_worker] = merged_unassigned[col_worker].fillna("⚠️ 無班表紀錄(需手動指定)")
                 merged_unassigned["分配比例"] = merged_unassigned["分配比例"].fillna(1.0)
@@ -514,7 +677,6 @@ def render_home_care_payroll():
 
             a_split_df = pd.concat(split_parts, ignore_index=True) if split_parts else pd.DataFrame()
         else:
-            # 若未上傳獨立 A碼核銷表，直接從服務清冊計算
             a_raw = work_df[work_df[col_code].str.startswith(("AA", "GA"))].copy()
             def calc_a_pool(row):
                 code = row[col_code]
@@ -531,7 +693,12 @@ def render_home_care_payroll():
                     pool = gross * (a_share_pct / 100.0)
                 return pd.Series([gross, pool])
             a_raw[["核銷總額", "居服員總分潤池"]] = a_raw.apply(calc_a_pool, axis=1)
-            a_base = a_raw.groupby([col_client, col_code], as_index=False)[["核銷總額", "居服員總分潤池"]].sum()
+            a_raw["_a_qty"] = a_raw[col_count]
+            a_raw["_a_name"] = ""
+            a_raw["_a_dates"] = ""
+            a_base = a_raw.groupby([col_client, col_code], as_index=False)[["核銷總額", "居服員總分潤池", "_a_qty"]].sum()
+            a_base["_a_name"] = ""
+            a_base["_a_dates"] = ""
             a_split_df = pd.merge(a_base, ratio_df, on=col_client, how="left")
             a_split_df[col_worker] = a_split_df[col_worker].fillna("⚠️ 無班表紀錄(需手動指定)")
             a_split_df["分配比例"] = a_split_df["分配比例"].fillna(1.0)
@@ -556,7 +723,7 @@ def render_home_care_payroll():
         all_excel_bytes = build_formatted_workbook(
             final_payroll, a_split_df, b_df,
             col_client, col_worker, col_code, col_count,
-            month_label, a_share_pct, b_share_pct,
+            org_name, month_label, a_share_pct, b_share_pct,
             target_workers=None
         )
 
@@ -569,6 +736,7 @@ def render_home_care_payroll():
             "col_worker": col_worker,
             "col_code": col_code,
             "col_count": col_count,
+            "org_name": org_name,
             "month_label": month_label,
             "a_share_pct": a_share_pct,
             "b_share_pct": b_share_pct
@@ -586,9 +754,8 @@ def render_home_care_payroll():
         m_label = res["month_label"]
 
         valid_workers = [w for w in final_payroll[c_worker].tolist() if not str(w).startswith("⚠️")]
-        st.success(f"✅ 計算完成！共為 {len(valid_workers)} 位居服員完成拆帳核算：")
+        st.success(f"✅ 計算完成！已為 {len(valid_workers)} 位居服員套用機構專屬格式並建立自動連動公式：")
         
-        # 全機構總計
         st.markdown("#### 🏢 全機構薪資總計")
         m1, m2, m3 = st.columns(3)
         m1.metric("全機構應發總薪資 (A+B)", f"${final_payroll['本月應發總薪資(A+B)'].sum():,.0f}")
@@ -597,11 +764,9 @@ def render_home_care_payroll():
 
         st.divider()
 
-        # 單人預覽與單人獨立列印下載
         preview_list = valid_workers + [w for w in final_payroll[c_worker].tolist() if str(w).startswith("⚠️")]
-        preview_worker = st.selectbox("🔍 選擇居服員檢視個人明細與下載單人薪資單：", preview_list)
+        preview_worker = st.selectbox("🔍 選擇居服員檢視個人明細與下載單人薪資明細表：", preview_list)
         
-        # 計算該位居服員的個人總額卡片
         w_row = final_payroll[final_payroll[c_worker] == preview_worker].iloc[0]
         w_a_total = w_row["A碼實領薪資"]
         w_b_total = w_row["B碼實領薪資"]
@@ -610,35 +775,33 @@ def render_home_care_payroll():
         st.markdown(f"#### 👤 【{preview_worker}】個人薪資總計")
         wm1, wm2, wm3 = st.columns(3)
         wm1.metric(f"{preview_worker} 本月應發總薪資", f"${w_grand_total:,.0f}")
-        wm2.metric("A碼拆帳總計", f"${w_a_total:,.0f}")
-        wm3.metric("B碼平地拆帳總計", f"${w_b_total:,.0f}")
+        wm2.metric("A碼總計 (一般+假日)", f"${w_a_total:,.0f}")
+        wm3.metric("B碼工作薪資小計(A)", f"${w_b_total:,.0f}")
 
         p_col1, p_col2 = st.columns(2)
         with p_col1:
-            st.markdown(f"**{preview_worker} — A碼分攤明細**")
-            w_a_view = a_split_df[a_split_df[c_worker] == preview_worker][[c_client, "該案總服務次數", "個人服務次數", c_code, "核銷總額", "居服員實領"]].copy()
-            w_a_view = w_a_view.rename(columns={"核銷總額": "A碼核銷金額", "居服員實領": f"A碼實領({res['a_share_pct']}%)"})
+            st.markdown(f"**{preview_worker} — A碼服務明細**")
+            w_a_view = a_split_df[a_split_df[c_worker] == preview_worker][[c_code, "_a_name", c_client, "_a_qty", "居服員實領", "_a_dates"]].copy()
+            w_a_view = w_a_view.rename(columns={"_a_name": "服務項目類別", "_a_qty": "數量", "居服員實領": "小計", "_a_dates": "服務日期"})
             st.dataframe(w_a_view, use_container_width=True, hide_index=True)
         with p_col2:
-            st.markdown(f"**{preview_worker} — B碼平地計薪明細**")
+            st.markdown(f"**{preview_worker} — 個案服務拆帳統計細項 (BA碼)**")
             if not b_df.empty:
-                w_b_view = b_df[b_df[c_worker] == preview_worker].groupby([c_client, c_code], as_index=False).agg({c_count: "sum", "核銷總額(平地基準)": "sum", "居服員實領": "sum"})
-                w_b_view = w_b_view.rename(columns={c_count: "服務次數", "核銷總額(平地基準)": "平地計薪金額", "居服員實領": f"B碼實領({res['b_share_pct']}%)"})
+                w_b_view = b_df[b_df[c_worker] == preview_worker].groupby(c_client, as_index=False, sort=False)["居服員實領"].sum()
+                w_b_view = w_b_view.rename(columns={"居服員實領": "BA碼金額(元)"})
                 st.dataframe(w_b_view, use_container_width=True, hide_index=True)
 
-        # 產生該位居服員專屬的單人 Excel 檔
         single_excel_bytes = build_formatted_workbook(
             final_payroll, a_split_df, b_df,
             c_client, c_worker, c_code, c_count,
-            m_label, res["a_share_pct"], res["b_share_pct"],
+            res["org_name"], m_label, res["a_share_pct"], res["b_share_pct"],
             target_workers=[preview_worker]
         )
 
-        # 雙下載按鈕：左邊下載單人專屬檔（可轉PDF或直接列印），右邊下載全機構整批檔
         dl_col1, dl_col2 = st.columns(2)
         with dl_col1:
             st.download_button(
-                label=f"🖨️ 下載【{m_label} {preview_worker} 薪資服務明細.xlsx】（單人獨立檔）",
+                label=f"🖨️ 下載【{m_label} {preview_worker} 薪資明細表.xlsx】（完全還原機構版型）",
                 data=single_excel_bytes,
                 file_name=f"{m_label}_{preview_worker}_薪資服務明細.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -646,7 +809,7 @@ def render_home_care_payroll():
             )
         with dl_col2:
             st.download_button(
-                label=f"📥 下載【{m_label} 全機構居服員薪資服務明細.xlsx】（一人一分頁）",
+                label=f"📥 下載【{m_label} 全機構居服員薪資明細表.xlsx】（一人一分頁）",
                 data=res["all_excel_bytes"],
                 file_name=f"{m_label}_全機構居服員薪資服務明細.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
