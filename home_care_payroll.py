@@ -25,20 +25,26 @@ DEFAULT_PRICE_TABLE = {
     "BA03": {"plain": 35,   "indigenous": 40},
     "BA04": {"plain": 130,  "indigenous": 155},
     "BA05": {"plain": 310,  "indigenous": 370},
-    "BA05-1": {"plain": 261, "indigenous": 313},
+    "BA05-1": {"plain": 310, "indigenous": 370},
+    "BA06": {"plain": 260,  "indigenous": 310},
     "BA07": {"plain": 325,  "indigenous": 390},
     "BA08": {"plain": 500,  "indigenous": 600},
+    "BA09": {"plain": 155,  "indigenous": 185},
     "BA10": {"plain": 155,  "indigenous": 185},
     "BA11": {"plain": 195,  "indigenous": 235},
     "BA12": {"plain": 195,  "indigenous": 235},
     "BA13": {"plain": 195,  "indigenous": 235},
     "BA14": {"plain": 685,  "indigenous": 820},
     "BA15": {"plain": 195,  "indigenous": 235},
-    "BA15-1": {"plain": 186, "indigenous": 223},
+    "BA15-1": {"plain": 195, "indigenous": 235},
     "BA16": {"plain": 130,  "indigenous": 155},
     "BA17": {"plain": 150,  "indigenous": 180},
+    "BA17-1": {"plain": 150, "indigenous": 180},
+    "BA17-2": {"plain": 150, "indigenous": 180},
     "BA18": {"plain": 200,  "indigenous": 240},
+    "BA19": {"plain": 150,  "indigenous": 180},
     "BA20": {"plain": 175,  "indigenous": 210},
+    "BA21": {"plain": 155,  "indigenous": 185},
     "BA22": {"plain": 130,  "indigenous": 155},
     "BA23": {"plain": 200,  "indigenous": 240},
     "BA24": {"plain": 220,  "indigenous": 265},
@@ -869,12 +875,17 @@ def render_home_care_payroll():
         bg_df["服務人員"] = bg_df["_w_list"]
 
         if sv_fee == "(依代碼查平地單價表)":
-            bg_df["平地單價"] = bg_df["服務代碼"].apply(lambda c: price_map.get(c, {"plain": 0})["plain"])
+            def get_plain_price(c):
+                if c in price_map:
+                    return price_map[c]["plain"]
+                base_c = c.split("-")[0]
+                return price_map.get(base_c, {"plain": 0})["plain"]
+
+            bg_df["平地單價"] = bg_df["服務代碼"].apply(get_plain_price)
             bg_df["平地總額"] = bg_df["平地單價"] * bg_df["服務次數"]
 
+        # 單筆明細保留小數，避免逐筆進位產生尾差
         bg_df["居服員實領"] = bg_df["平地總額"] * (bg_share_pct / 100.0)
-        if round_to_int:
-            bg_df["居服員實領"] = bg_df["居服員實領"].round(0)
 
         # ------------------------------------------
         # Step 4：彙總全機構總表與產生圖一格式 Excel
@@ -882,6 +893,8 @@ def render_home_care_payroll():
         bg_sum = bg_df.groupby("服務人員")[["平地總額", "居服員實領"]].sum().reset_index().rename(
             columns={"平地總額": "BA/G碼平地總額", "居服員實領": "工作薪資(BA+G碼)"}
         ) if not bg_df.empty else pd.DataFrame(columns=["服務人員", "BA/G碼平地總額", "工作薪資(BA+G碼)"])
+        if round_to_int and not bg_sum.empty:
+            bg_sum["工作薪資(BA+G碼)"] = bg_sum["工作薪資(BA+G碼)"].round(0)
 
         a_sum = a_split_df.groupby("服務人員")["小計"].sum().reset_index().rename(
             columns={"小計": "A碼實領總額"}
