@@ -376,7 +376,7 @@ def render_home_care_payroll():
     if not df_a_claim.empty:
         st.markdown("**A碼核銷表欄位對應：**")
         ac_cols = list(df_a_claim.columns)
-        ac1, ac2, ac3, ac4 = st.columns(4)
+        ac1, ac2, ac3, ac4, ac5 = st.columns(5)
         with ac1:
             ac_client = st.selectbox("核銷表-個案姓名/ID", ac_cols, index=ac_cols.index(auto_match_col(ac_cols, ["個案姓名", "個案", "案主", "姓名"])))
         with ac2:
@@ -385,7 +385,12 @@ def render_home_care_payroll():
             ac_qty = st.selectbox("核銷表-數量/天數", ac_cols, index=ac_cols.index(auto_match_col(ac_cols, ["數量", "次數", "天數"])))
         with ac4:
             ac_amount = st.selectbox("核銷表-核銷總金額", ac_cols, index=ac_cols.index(auto_match_col(ac_cols, ["小計", "核銷金額", "申報金額", "總金額", "金額", "費用"])))
-
+        with ac5:
+            ac_worker_opts = ["(無，全依服務清冊比例分攤)"] + ac_cols
+            def_ac_w = auto_match_col(ac_cols, ["服務人員", "居服員", "照服員", "人員"])
+            def_ac_w_idx = ac_worker_opts.index(def_ac_w) if def_ac_w in ac_cols and any(k in str(def_ac_w) for k in ["服務人員", "居服員", "人員"]) else 0
+            ac_worker = st.selectbox("核銷表-指定服務人員", ac_worker_opts, index=def_ac_w_idx, help="若該列已填單一居服員姓名(如AA09)，則100%直接算給該員，不按全月次數比例拆帳")
+            
     if st.button("🚀 開始自動拆帳並產生個人薪資單", type="primary", use_container_width=True):
         work_df = df_service.copy()
         work_df = work_df[work_df[col_client].notna() & work_df[col_worker].notna()].copy()
@@ -452,30 +457,64 @@ def render_home_care_payroll():
         ratio_df["分配比例"] = ratio_df["個人服務次數"] / ratio_df["該案總服務次數"]
 
         if not df_a_claim.empty:
-            a_base = df_a_claim[[ac_client, ac_code, ac_qty, ac_amount]].copy()
-            a_base.columns = [col_client, col_code, "_a_qty", "清冊核銷原額"]
-            a_base = a_base[a_base[col_client].notna() & a_base[col_code].notna()].copy()
-            a_base = a_base[~a_base[col_client].astype(str).str.contains("總計|合計|小計", na=False)].copy()
-            a_base[col_client] = a_base[col_client].astype(str).str.strip()
-            a_base[col_code] = a_base[col_code].astype(str).str.strip().str.upper()
-            a_base["_a_qty"] = pd.to_numeric(a_base["_a_qty"], errors='coerce').fillna(1)
-            a_base["清冊核銷原額"] = pd.to_numeric(a_base["清冊核銷原額"], errors='coerce').fillna(0)
+            cols_to_take = [ac_client, ac_code, ac_qty, ac_amount]
+            if ac_worker != "(無，全依服務清冊比例分攤)":
+                cols_to_take.append(ac_worker)
+                a_raw_claim = df_a_claim[cols_to_take].copy()
+                a_raw_claim.columns = [col_client, col_code, "_a_qty", "清冊核銷原額", "_direct_worker"]
+            else:
+                a_raw_claim = df_a_claim[cols_to_take].copy()
+                a_raw_claim.columns = [col_client, col_code, "_a_qty", "清冊核銷原額"]
+                a_raw_claim["_direct_worker"] = ""
 
-            # 判斷是否為定額實領碼 (AA09 / GA09)
-            is_fixed_code = a_base[col_code].str.startswith(("AA09", "GA09"))
-            
-            # 一般 A 碼：居服員分潤池 = 清冊核銷原額 × 50% (a_share_pct)
-            # AA09 / GA09：不走 55 分帳，居服員分潤池直接就是 500元 × 天數
-            a_base["核銷總額"] = a_base["清冊核銷原額"]
-            a_base["居服員總分潤池"] = a_base["清冊核銷原額"] * (a_share_pct / 100.0)
-            
-            mask_aa09 = a_base[col_code].str.startswith("AA09")
-            mask_ga09 = a_base[col_code].str.startswith("GA09")
-            a_base.loc[mask_aa09, "居服員總分潤池"] = a_base.loc[mask_aa09, "_a_qty"] * custom_aa09
-            a_base.loc[mask_ga09, "居服員總分潤池"] = a_base.loc[mask_ga09, "_a_qty"] * custom_ga09
+            a_raw_claim = a_raw_claim[a_raw_claim[col_client].notna() & a_raw_claim[col_code].notna()].copy()
+            a_raw_claim = a_raw_claim[~a_raw_claim[col_client].astype(str).str.contains("總計|合計|小計", na=False)].copy()
+            a_raw_claim[col_client] = a_raw_claim[col_client].astype(str).str.strip()
+            a_raw_claim[col_code] = a_raw_claim[col_code].astype(str).str.strip().str.upper()
+            a_raw_claim["_a_qty"] = pd.to_numeric(a_raw_claim["_a_qty"], errors='coerce').fillna(1)
+            a_raw_claim["清冊核銷原額"] = pd.to_numeric(a_raw_claim["清冊核銷原額"], errors='coerce').fillna(0)
+            a_raw_claim["_direct_worker"] = a_raw_claim["_direct_worker"].fillna("").astype(str).str.strip()
+            a_raw_claim.loc[a_raw_claim["_direct_worker"].isin(["nan", "None", ""]), "_direct_worker"] = ""
 
-            a_base = a_base.groupby([col_client, col_code], as_index=False)[["核銷總額", "居服員總分潤池"]].sum()
+            # 計算每列核銷總額與居服員總分潤池（AA09/GA09 直接實領 500×天數，其餘按55分帳）
+            a_raw_claim["核銷總額"] = a_raw_claim["清冊核銷原額"]
+            a_raw_claim["居服員總分潤池"] = a_raw_claim["清冊核銷原額"] * (a_share_pct / 100.0)
+
+            mask_aa09 = a_raw_claim[col_code].str.startswith("AA09")
+            mask_ga09 = a_raw_claim[col_code].str.startswith("GA09")
+            a_raw_claim.loc[mask_aa09, "居服員總分潤池"] = a_raw_claim.loc[mask_aa09, "_a_qty"] * custom_aa09
+            a_raw_claim.loc[mask_ga09, "居服員總分潤池"] = a_raw_claim.loc[mask_ga09, "_a_qty"] * custom_ga09
+
+            # 分流處理：
+            # 情況 1：A碼清冊該列已指定單一服務人員（且不含頓號多人），例如 AA09 寫「張敏」 -> 直接 100% 歸該員，不按全月次數比例拆！
+            is_single_assigned = (a_raw_claim["_direct_worker"] != "") & (~a_raw_claim["_direct_worker"].str.contains(r"[、,，/]"))
+            
+            assigned_df = a_raw_claim[is_single_assigned].copy()
+            unassigned_df = a_raw_claim[~is_single_assigned].copy()
+
+            split_parts = []
+
+            if not assigned_df.empty:
+                assigned_grouped = assigned_df.groupby([col_client, col_code, "_direct_worker"], as_index=False)[["核銷總額", "居服員總分潤池"]].sum()
+                assigned_grouped = assigned_grouped.rename(columns={"_direct_worker": col_worker})
+                # 帶入該個案總服務次數與個人服務次數供報表顯示，但分配比例強制為 1.0 (100%)
+                assigned_grouped = pd.merge(assigned_grouped, ratio_df[[col_client, col_worker, "該案總服務次數", "個人服務次數"]], on=[col_client, col_worker], how="left")
+                assigned_grouped["分配比例"] = 1.0
+                split_parts.append(assigned_grouped)
+
+            if not unassigned_df.empty:
+                unassigned_grouped = unassigned_df.groupby([col_client, col_code], as_index=False)[["核銷總額", "居服員總分潤池"]].sum()
+                merged_unassigned = pd.merge(unassigned_grouped, ratio_df, on=col_client, how="left")
+                merged_unassigned[col_worker] = merged_unassigned[col_worker].fillna("⚠️ 無班表紀錄(需手動指定)")
+                merged_unassigned["分配比例"] = merged_unassigned["分配比例"].fillna(1.0)
+                if split_method == "依人頭均分":
+                    headcount = merged_unassigned.groupby([col_client, col_code])[col_worker].transform("count")
+                    merged_unassigned["分配比例"] = 1.0 / headcount
+                split_parts.append(merged_unassigned)
+
+            a_split_df = pd.concat(split_parts, ignore_index=True) if split_parts else pd.DataFrame()
         else:
+            # 若未上傳獨立 A碼核銷表，直接從服務清冊計算
             a_raw = work_df[work_df[col_code].str.startswith(("AA", "GA"))].copy()
             def calc_a_pool(row):
                 code = row[col_code]
@@ -493,16 +532,10 @@ def render_home_care_payroll():
                 return pd.Series([gross, pool])
             a_raw[["核銷總額", "居服員總分潤池"]] = a_raw.apply(calc_a_pool, axis=1)
             a_base = a_raw.groupby([col_client, col_code], as_index=False)[["核銷總額", "居服員總分潤池"]].sum()
+            a_split_df = pd.merge(a_base, ratio_df, on=col_client, how="left")
+            a_split_df[col_worker] = a_split_df[col_worker].fillna("⚠️ 無班表紀錄(需手動指定)")
+            a_split_df["分配比例"] = a_split_df["分配比例"].fillna(1.0)
 
-        a_split_df = pd.merge(a_base, ratio_df, on=col_client, how="left")
-        a_split_df[col_worker] = a_split_df[col_worker].fillna("⚠️ 無班表紀錄(需手動指定)")
-        a_split_df["分配比例"] = a_split_df["分配比例"].fillna(1.0)
-        
-        if split_method == "依人頭均分":
-            headcount = a_split_df.groupby([col_client, col_code])[col_worker].transform("count")
-            a_split_df["分配比例"] = 1.0 / headcount
-
-        # 直接用「居服員總分潤池 × 多人分配比例」算出實領，AA09/GA09 不會再被打折！
         a_split_df["居服員實領"] = a_split_df["居服員總分潤池"] * a_split_df["分配比例"]
         if round_to_int:
             a_split_df["居服員實領"] = a_split_df["居服員實領"].round(0)
