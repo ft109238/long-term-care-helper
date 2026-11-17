@@ -51,18 +51,32 @@ DEFAULT_PRICE_TABLE = {
     "GA07": {"plain": 770,  "indigenous": 925},
 }
 
+def make_unique_columns(raw_cols):
+    """確保所有欄位名稱唯一，遇到重複名稱自動加上 _2, _3 避免 pandas 報錯"""
+    seen = {}
+    unique_cols = []
+    for i, c in enumerate(raw_cols):
+        name = str(c).strip() if pd.notna(c) and str(c).strip() != "" else f"欄位_{i}"
+        if name in seen:
+            seen[name] += 1
+            unique_cols.append(f"{name}_{seen[name]}")
+        else:
+            seen[name] = 1
+            unique_cols.append(name)
+    return unique_cols
+
 def detect_header_row(df_raw):
-    """自動尋找包含真正欄位名稱的那一列"""
+    """自動尋找包含真正欄位名稱的那一列，並保證欄位名稱不重複"""
     keywords = ["個案", "案主", "姓名", "服務人員", "居服員", "照服員", "代碼", "項目", "碼別", "次數", "數量", "日期", "金額", "小計"]
     for idx in range(min(15, len(df_raw))):
         row_values = [str(val).strip() for val in df_raw.iloc[idx].values if pd.notna(val)]
         match_count = sum(1 for kw in keywords if any(kw in val for val in row_values))
         if match_count >= 2:
             df_clean = df_raw.iloc[idx + 1:].copy()
-            df_clean.columns = [str(c).strip() if pd.notna(c) else f"欄位_{i}" for i, c in enumerate(df_raw.iloc[idx].values)]
+            df_clean.columns = make_unique_columns(df_raw.iloc[idx].values)
             return df_clean.reset_index(drop=True)
     df_clean = df_raw.iloc[1:].copy()
-    df_clean.columns = [str(c).strip() if pd.notna(c) else f"欄位_{i}" for i, c in enumerate(df_raw.iloc[0].values)]
+    df_clean.columns = make_unique_columns(df_raw.iloc[0].values)
     return df_clean.reset_index(drop=True)
 
 def read_uploaded_files(uploaded_files):
@@ -648,12 +662,15 @@ def render_home_care_payroll():
     if st.button("🚀 執行三表精準拆帳並產生薪資明細表", type="primary", use_container_width=True):
         # ------------------------------------------
         # Step 1：整理【當月班表】計算每個案的人員服務次數比例
-        # ------------------------------------------
-        sched_df = df_sched.copy()
-        sched_df = sched_df[sched_df[sc_client].notna() & sched_df[sc_worker].notna()].copy()
-        sched_df = sched_df[~sched_df[sc_client].astype(str).str.contains("總計|合計|小計", na=False)].copy()
-        sched_df["個案姓名"] = sched_df[sc_client].astype(str).str.strip()
-        sched_df["服務人員"] = sched_df[sc_worker].astype(str).str.strip()
+        sched_df = pd.DataFrame({
+            "個案姓名": df_sched[sc_client],
+            "服務人員": df_sched[sc_worker],
+            "次數": 1.0 if sc_count == "(每列算 1 次)" else pd.to_numeric(df_sched[sc_count], errors='coerce').fillna(1.0)
+        })
+        sched_df = sched_df[sched_df["個案姓名"].notna() & sched_df["服務人員"].notna()].copy()
+        sched_df = sched_df[~sched_df["個案姓名"].astype(str).str.contains("總計|合計|小計", na=False)].copy()
+        sched_df["個案姓名"] = sched_df["個案姓名"].astype(str).str.strip()
+        sched_df["服務人員"] = sched_df["服務人員"].astype(str).str.strip()
         sched_df["次數"] = 1.0 if sc_count == "(每列算 1 次)" else pd.to_numeric(sched_df[sc_count], errors='coerce').fillna(1.0)
 
         # 若班表單格仍有多人用頓號串接，自動拆開均分
